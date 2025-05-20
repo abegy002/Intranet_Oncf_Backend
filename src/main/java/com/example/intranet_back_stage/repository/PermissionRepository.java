@@ -10,5 +10,4 @@ public interface PermissionRepository extends JpaRepository<Permission, Long> {
     List<Permission> findAll();
     boolean existsByName(String name);
     List<Permission> findByNameIn(List<String> names);
-    //oncf sikkanet
 }
