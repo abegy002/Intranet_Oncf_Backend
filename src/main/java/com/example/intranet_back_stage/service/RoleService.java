@@ -1,36 +1,67 @@
 package com.example.intranet_back_stage.service;
 
+import com.example.intranet_back_stage.dto.RoleDTO;
+import com.example.intranet_back_stage.mapper.RoleMapper;
+import com.example.intranet_back_stage.model.Permission;
 import com.example.intranet_back_stage.model.Role;
+import com.example.intranet_back_stage.repository.PermissionRepository;
 import com.example.intranet_back_stage.repository.RoleRepository;
-import jakarta.transaction.Transactional;
-import lombok.AllArgsConstructor;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
-@AllArgsConstructor
-@Transactional
+@RequiredArgsConstructor
 public class RoleService {
 
-   private RoleRepository roleRepo;
+    private final RoleRepository roleRepository;
+    private final PermissionRepository permissionRepository;
+    private final RoleMapper roleMapper;
 
-   public List<Role> findAll() { return roleRepo.findAll(); }
-
-    public void createRole(String name) {
-        Role role = new Role();
-        role.setName(name);
-        roleRepo.save(role);
+    public List<RoleDTO> getAllRoles() {
+        return roleRepository.findAll().stream()
+                .map(roleMapper::toDTO)
+                .collect(Collectors.toList());
     }
 
-    public void updateRole(Long id, String newName) {
-        Role role = roleRepo.findById(id).orElseThrow();
-       role.setName(newName);
-        roleRepo.save(role);
+    public RoleDTO getRoleById(Long id) {
+        return roleRepository.findById(id)
+                .map(roleMapper::toDTO)
+                .orElseThrow(() -> new RuntimeException("Role not found"));
+    }
+
+    public RoleDTO createRole(RoleDTO roleDTO) {
+        Role role = roleMapper.toEntity(roleDTO);
+        return roleMapper.toDTO(roleRepository.save(role));
+    }
+
+    public RoleDTO updateRole(Long id, RoleDTO roleDTO) {
+        Role existing = roleRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Role not found"));
+        existing.setName(roleDTO.getName());
+        existing.setPermissions(roleMapper.toEntity(roleDTO).getPermissions());
+        return roleMapper.toDTO(roleRepository.save(existing));
     }
 
     public void deleteRole(Long id) {
-        roleRepo.deleteById(id);
-   }
+        roleRepository.deleteById(id);
+    }
+
+    public RoleDTO assignPermissionsToRole(Long roleId, Set<Long> permissionIds) {
+        Role role = roleRepository.findById(roleId)
+                .orElseThrow(() -> new RuntimeException("Role not found with id: " + roleId));
+
+        Set<Permission> permissions = permissionIds.stream()
+                .map(id -> permissionRepository.findById(id)
+                        .orElseThrow(() -> new RuntimeException("Permission not found with id: " + id)))
+                .collect(Collectors.toSet());
+
+        role.setPermissions(permissions);
+        Role savedRole = roleRepository.save(role);
+        return roleMapper.toDTO(savedRole);
+    }
+
 }

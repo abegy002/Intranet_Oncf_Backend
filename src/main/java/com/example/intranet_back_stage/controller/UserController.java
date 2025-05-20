@@ -52,28 +52,4 @@ public class UserController {
         userService.deleteUser(id);
         return ResponseEntity.ok("User deleted successfully!");
     }
-
-    @GetMapping("/roles")
-    public ResponseEntity<List<Role>> listRoles(Model model) {
-        model.addAttribute("roles", roleService.findAll());
-        return ResponseEntity.ok(roleService.findAll()); // roles.html
-    }
-
-    @PostMapping("/roles/create")
-    public String createRole(@RequestParam String roleName) {
-        roleService.createRole(roleName);
-        return "redirect:/admin/roles";
-    }
-
-    @PostMapping("/roles/edit")
-    public String editRole(@RequestParam Long roleId, @RequestParam String newRoleName) {
-        roleService.updateRole(roleId, newRoleName);
-        return "redirect:/admin/roles";
-    }
-
-    @PostMapping("/roles/delete")
-    public String deleteRole(@RequestParam Long roleId) {
-        roleService.deleteRole(roleId);
-        return "redirect:/admin/roles";
-    }
 }

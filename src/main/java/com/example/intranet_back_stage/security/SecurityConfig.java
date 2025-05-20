@@ -4,7 +4,6 @@ import com.example.intranet_back_stage.repository.UserRepository;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -33,7 +32,7 @@ public class SecurityConfig  implements WebMvcConfigurer {
                 .csrf(csrf -> csrf.disable())
                 .cors(cors -> {})
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/auth/login", "/register", "/users/**", "/jobs/**", "/departments/**").permitAll()
+                        .requestMatchers("/auth/login", "/register", "/users/**", "/jobs/**", "/departments/**","/roles/**","/permissions/**").permitAll()
                         .requestMatchers("/admin/**").hasRole("ADMIN")
                         .requestMatchers("/user/**").hasRole("USER")
                         .anyRequest().authenticated()
