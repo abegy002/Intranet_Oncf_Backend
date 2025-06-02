@@ -6,12 +6,10 @@ import com.example.intranet_back_stage.model.*;
 import com.example.intranet_back_stage.repository.*;
 import jakarta.transaction.Transactional;
 import lombok.AllArgsConstructor;
-import lombok.NoArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -25,38 +23,8 @@ public class UserService {
     private final DepartmentRepository departmentRepo;
     private final JobRepository jobRepo;
 
-    public void addPermissionsToRole(String roleName, List<String> permissionNames) {
-        Role role = roleRepo.findByName(roleName).orElseThrow(() -> new RuntimeException("Role not found"));
 
-        List<Permission> permissions = permRepo.findByNameIn(permissionNames);
-        role.getPermissions().addAll(permissions);
-        roleRepo.save(role);
-    }
-
-    @Transactional
-    public void addRoleToUser(String username, String roleName) {
-        // Find the user by their username
-        User user = userRepo.findByUsername(username)
-                .orElseThrow(() -> new RuntimeException("User not found"));
-
-        // Find the role by its name
-        Role role = roleRepo.findByName(roleName)
-                .orElseThrow(() -> new RuntimeException("Role not found"));
-
-        // Assign the role to the user
-//        user.getRole().add(role);
-
-        // Save the user with the new role
-        userRepo.save(user);
-    }
-
-    public Set<Permission> getPermissionsForRole(String roleName) {
-        return roleRepo.findByName(roleName).orElseThrow().getPermissions();
-    }
-
-    /*USERS -------------------------------------------------------------------------------------------- CRUD*/
-
-    public void createUserWithRole(UserDTO userDTO) {
+      public void createUserWithRole(UserDTO userDTO) {
         if (userRepo.findByUsername(userDTO.getUsername()).isPresent()) {
             throw new RuntimeException("User already exists");
         }

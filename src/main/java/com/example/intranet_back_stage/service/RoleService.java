@@ -4,8 +4,11 @@ import com.example.intranet_back_stage.dto.RoleDTO;
 import com.example.intranet_back_stage.mapper.RoleMapper;
 import com.example.intranet_back_stage.model.Permission;
 import com.example.intranet_back_stage.model.Role;
+import com.example.intranet_back_stage.model.User;
 import com.example.intranet_back_stage.repository.PermissionRepository;
 import com.example.intranet_back_stage.repository.RoleRepository;
+import com.example.intranet_back_stage.repository.UserRepository;
+import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -18,6 +21,7 @@ import java.util.stream.Collectors;
 public class RoleService {
 
     private final RoleRepository roleRepository;
+    private final UserRepository userRepository;
     private final PermissionRepository permissionRepository;
     private final RoleMapper roleMapper;
 
@@ -62,6 +66,23 @@ public class RoleService {
         role.setPermissions(permissions);
         Role savedRole = roleRepository.save(role);
         return roleMapper.toDTO(savedRole);
+    }
+
+    @Transactional
+    public void addRoleToUser(String username, String roleName) {
+        // Find the user by their username
+        User user = userRepository.findByUsername(username)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        // Find the role by its name
+        Role role = roleRepository.findByName(roleName)
+                .orElseThrow(() -> new RuntimeException("Role not found"));
+
+        // Assign the role to the user
+//        user.getRole().add(role);
+
+        // Save the user with the new role
+        userRepository.save(user);
     }
 
 }

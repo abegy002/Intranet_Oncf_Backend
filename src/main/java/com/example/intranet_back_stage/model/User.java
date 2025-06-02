@@ -1,5 +1,6 @@
 package com.example.intranet_back_stage.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import lombok.*;
 import org.springframework.security.core.GrantedAuthority;
@@ -13,6 +14,7 @@ import java.util.stream.Collectors;
 @Data
 @AllArgsConstructor
 @NoArgsConstructor
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 @Table(name = "users")
 public class User implements UserDetails {
 
@@ -41,7 +43,7 @@ public class User implements UserDetails {
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
         Set<GrantedAuthority> authorities = new HashSet<>();
-        authorities.add(new SimpleGrantedAuthority(role.getName()));
+        authorities.add(new SimpleGrantedAuthority("ROLE_" + role.getName()));
         authorities.addAll(role.getPermissions().stream()
                 .map(permission -> new SimpleGrantedAuthority(permission.getName()))
                 .collect(Collectors.toSet()));
