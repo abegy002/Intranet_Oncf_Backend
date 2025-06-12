@@ -12,7 +12,5 @@ public class JobDTO {
 
     @NotBlank(message = "Job title is required")
     private String title;
-
-    @NotNull(message = "Department ID is required")
-    private Long departmentId;
+    private DepartmentDTO department;
 }

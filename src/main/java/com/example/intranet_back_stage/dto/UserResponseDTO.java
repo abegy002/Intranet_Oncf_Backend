@@ -13,7 +13,6 @@ public class UserResponseDTO {
     private String firstname;
     private String lastname;
     private String email;
-    private String jobTitle;
-    private String department;
-    private String roleName;
+    private JobDTO job;
+    private RoleDTO role;  // nested role object
 }

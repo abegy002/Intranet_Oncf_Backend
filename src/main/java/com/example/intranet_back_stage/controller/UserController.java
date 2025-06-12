@@ -2,13 +2,12 @@ package com.example.intranet_back_stage.controller;
 
 import com.example.intranet_back_stage.dto.UserDTO;
 import com.example.intranet_back_stage.dto.UserResponseDTO;
-import com.example.intranet_back_stage.model.Role;
+import com.example.intranet_back_stage.model.User;
 import com.example.intranet_back_stage.service.RoleService;
 import com.example.intranet_back_stage.service.UserService;
-import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
-import org.springframework.ui.Model;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
@@ -31,6 +30,11 @@ public class UserController {
         return ResponseEntity.ok(response);
     }
 
+    @GetMapping("/me")
+    public ResponseEntity<UserResponseDTO> getCurrentUserProfile(@AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(userService.getUserById(user.getId()));
+    }
+
     @GetMapping("/{id}")
     public ResponseEntity<UserResponseDTO> getUserById(@PathVariable Long id) {
         return ResponseEntity.ok(userService.getUserById(id));
@@ -44,12 +48,12 @@ public class UserController {
     @PutMapping("/{id}")
     public ResponseEntity<?> updateUser(@PathVariable Long id, @RequestBody UserDTO userDTO) {
         userService.updateUser(id, userDTO);
-        return ResponseEntity.ok("User updated successfully!");
+        return ResponseEntity.ok(Map.of("message", "User updated successfully!"));
     }
 
     @DeleteMapping("/{id}")
     public ResponseEntity<?> deleteUser(@PathVariable Long id) {
         userService.deleteUser(id);
-        return ResponseEntity.ok("User deleted successfully!");
+        return ResponseEntity.ok(Map.of("message", "User deleted successfully!"));
     }
 }

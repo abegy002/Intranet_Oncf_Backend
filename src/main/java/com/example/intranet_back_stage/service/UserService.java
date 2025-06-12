@@ -1,7 +1,6 @@
 package com.example.intranet_back_stage.service;
 
-import com.example.intranet_back_stage.dto.UserDTO;
-import com.example.intranet_back_stage.dto.UserResponseDTO;
+import com.example.intranet_back_stage.dto.*;
 import com.example.intranet_back_stage.model.*;
 import com.example.intranet_back_stage.repository.*;
 import jakarta.transaction.Transactional;
@@ -81,22 +80,39 @@ public class UserService {
     }
 
     private UserResponseDTO mapToDTO(User user) {
-        String jobTitle = user.getJob() != null ? user.getJob().getTitle() : null;
-        String dept = (user.getJob() != null && user.getJob().getDepartment() != null)
-                ? user.getJob().getDepartment().getName()
-                : null;
+        UserResponseDTO dto = new UserResponseDTO();
+        dto.setId(user.getId());
+        dto.setUsername(user.getUsername());
+        dto.setFirstname(user.getFirstname());
+        dto.setLastname(user.getLastname());
+        dto.setEmail(user.getEmail());
 
-        return new UserResponseDTO(
-                user.getId(),
-                user.getUsername(),
-                user.getFirstname(),
-                user.getLastname(),
-                user.getEmail(),
-                jobTitle,
-                dept,
-                user.getRole() != null ? user.getRole().getName() : null
-        );
+        if (user.getJob() != null) {
+            JobDTO jobDTO = new JobDTO();
+            jobDTO.setId(user.getJob().getId());
+            jobDTO.setTitle(user.getJob().getTitle());
+            Department department = user.getJob().getDepartment();
+            if (department != null) {
+                DepartmentDTO deptDTO = new DepartmentDTO();
+                deptDTO.setId(department.getId());
+                deptDTO.setName(department.getName());
+                jobDTO.setDepartment(deptDTO);
+            }
+            dto.setJob(jobDTO);
+        }
+
+
+        // map role entity to role DTO
+        if (user.getRole() != null) {
+            RoleDTO roleDTO = new RoleDTO();
+            roleDTO.setId(user.getRole().getId());
+            roleDTO.setName(user.getRole().getName());
+            dto.setRole(roleDTO);
+        }
+
+        return dto;
     }
+
 
 }
 
