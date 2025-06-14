@@ -1,8 +1,10 @@
 package com.example.intranet_back_stage.controller;
 
+import com.example.intranet_back_stage.dto.UserResponseDTO;
 import com.example.intranet_back_stage.model.User;
 import com.example.intranet_back_stage.repository.UserRepository;
 import com.example.intranet_back_stage.security.JwtUtil;
+import com.example.intranet_back_stage.service.UserService;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -29,7 +31,7 @@ public class AuthController {
 
     private AuthenticationManager authManager;
 
-    private UserRepository userRepository;
+    private UserService userService;
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody LoginRequest loginRequest) {
@@ -42,12 +44,12 @@ public class AuthController {
             SecurityContextHolder.getContext().setAuthentication(authentication);
             String jwt = jwtUtil.generateToken(loginRequest.getUsername());
 
-            User user = userRepository.findByUsername(loginRequest.getUsername())
-                    .orElseThrow(() -> new UsernameNotFoundException("User not found"));
+            UserResponseDTO user = userService.getUserByUsername(loginRequest.getUsername());
+
 
             Map<String, Object> response = new HashMap<>();
             response.put("token", jwt);
-            response.put("user", new User(user.getId(), user.getUsername(), user.getPassword(), user.getRole()));
+            response.put("user", user); // Or use a DTO here
 
             return ResponseEntity.ok(response);
         } catch (Exception e) {

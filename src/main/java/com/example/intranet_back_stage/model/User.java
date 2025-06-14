@@ -36,20 +36,41 @@ public class User implements UserDetails {
     @JoinColumn(name = "role_id")
     private Role role;
 
-    public User(Long id, String username, String password, Role role) {
-        this.id=id; this.username=username; this.password=password; this.role=role;
+    // User permissions directly managed here
+    @ManyToMany(fetch = FetchType.EAGER)
+    @JoinTable(
+            name = "user_permissions",
+            joinColumns = @JoinColumn(name = "user_id"),
+            inverseJoinColumns = @JoinColumn(name = "permission_id")
+    )
+    private Set<Permission> permissions = new HashSet<>();
+
+    // Constructors for convenience
+    public User(Long id, String username, String password, Role role, Set<Permission> permissions ) {
+        this.id = id;
+        this.username = username;
+        this.password = password;
+        this.role = role;
     }
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
         Set<GrantedAuthority> authorities = new HashSet<>();
-        authorities.add(new SimpleGrantedAuthority("ROLE_" + role.getName()));
-        authorities.addAll(role.getPermissions().stream()
-                .map(permission -> new SimpleGrantedAuthority(permission.getName()))
+
+        // Optionally add the role as authority
+        if (role != null) {
+            authorities.add(new SimpleGrantedAuthority("ROLE_" + role.getName()));
+        }
+
+        // Add all user permissions as authorities
+        authorities.addAll(permissions.stream()
+                .map(p -> new SimpleGrantedAuthority(p.getName()))
                 .collect(Collectors.toSet()));
+
         return authorities;
     }
 
+    // UserDetails interface methods
     @Override public boolean isAccountNonExpired() { return true; }
     @Override public boolean isAccountNonLocked() { return true; }
     @Override public boolean isCredentialsNonExpired() { return true; }

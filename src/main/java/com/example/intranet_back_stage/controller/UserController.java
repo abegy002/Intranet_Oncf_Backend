@@ -2,6 +2,7 @@ package com.example.intranet_back_stage.controller;
 
 import com.example.intranet_back_stage.dto.UserDTO;
 import com.example.intranet_back_stage.dto.UserResponseDTO;
+import com.example.intranet_back_stage.model.Permission;
 import com.example.intranet_back_stage.model.User;
 import com.example.intranet_back_stage.service.RoleService;
 import com.example.intranet_back_stage.service.UserService;
@@ -23,11 +24,30 @@ public class UserController {
     private final RoleService roleService;
 
     @PostMapping("/create")
-    public ResponseEntity<Map<String, String>> createUser(@RequestBody UserDTO userDTO) {
-        userService.createUserWithRole(userDTO);
-        Map<String, String> response = new HashMap<>();
-        response.put("message", "User created successfully");
-        return ResponseEntity.ok(response);
+    public ResponseEntity<?> createUser(@RequestBody UserDTO userDTO) {
+        try {
+            userService.createUserWithRole(userDTO);
+            return ResponseEntity.ok(Map.of("message", "User created successfully"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/permissions")
+    public ResponseEntity<List<Permission>> getUserPermissions(@PathVariable Long id) {
+        return ResponseEntity.ok(userService.getUserPermissions(id)); // Doit retourner des Permission
+    }
+
+    @PostMapping("/{id}/permissions")
+    public ResponseEntity<?> addPermissionToUser(@PathVariable Long id, @RequestBody Permission permission) {
+        userService.addPermissionToUser(id, permission);
+        return ResponseEntity.ok(Map.of("message", "Permission added successfully"));
+    }
+
+    @DeleteMapping("/{id}/permissions/{permissionId}")
+    public ResponseEntity<?> removePermissionFromUser(@PathVariable Long id, @PathVariable Long permissionId) {
+        userService.removePermissionFromUser(id, permissionId);
+        return ResponseEntity.ok(Map.of("message", "Permission removed successfully"));
     }
 
     @GetMapping("/me")

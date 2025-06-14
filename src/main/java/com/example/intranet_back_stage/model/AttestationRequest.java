@@ -1,7 +1,6 @@
 package com.example.intranet_back_stage.model;
 
 import com.example.intranet_back_stage.enums.Status;
-import com.example.intranet_back_stage.model.User;
 import jakarta.persistence.*;
 import lombok.*;
 import java.time.LocalDateTime;
@@ -32,7 +31,6 @@ public class AttestationRequest {
     // Date de la demande
     private LocalDateTime requestDate = LocalDateTime.now();
 
-    // Le fichier attestation envoyé par le RH (en bytes)
     @Column(columnDefinition = "BYTEA")
     private byte[] attestationFile;
 

@@ -33,7 +33,7 @@ public class PermissionController {
     @PutMapping("/{id}")
     public ResponseEntity<PermissionDTO> updatePermission(@PathVariable Long id,
                                                           @RequestBody PermissionDTO permissionDTO) {
-        return ResponseEntity.ok(permissionService.updatePermisson(id, permissionDTO));
+        return ResponseEntity.ok(permissionService.updatePermission(id, permissionDTO));
     }
 
     @DeleteMapping("/{id}")

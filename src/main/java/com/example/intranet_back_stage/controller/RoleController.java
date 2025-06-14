@@ -1,14 +1,12 @@
 package com.example.intranet_back_stage.controller;
 
 import com.example.intranet_back_stage.dto.RoleDTO;
-import com.example.intranet_back_stage.mapper.AssignPermissionsRequest;
 import com.example.intranet_back_stage.service.RoleService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Set;
 
 @RestController
 @RequestMapping("/roles")
@@ -43,14 +41,5 @@ public class RoleController {
         roleService.deleteRole(id);
         return ResponseEntity.noContent().build();
     }
-
-    @PutMapping("/{roleId}/permissions")
-    public RoleDTO assignPermissionsToRole(
-            @PathVariable Long roleId,
-            @RequestBody AssignPermissionsRequest request) {
-
-        return roleService.assignPermissionsToRole(roleId, request.getPermissionIds());
-    }
-
 
 }

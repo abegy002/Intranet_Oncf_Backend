@@ -1,7 +1,6 @@
 package com.example.intranet_back_stage.dto;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import lombok.*;
 
 @Data
