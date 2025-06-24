@@ -1,5 +1,6 @@
 package com.example.intranet_back_stage.controller;
 
+import com.example.intranet_back_stage.dto.LeaveRequestDTO;
 import com.example.intranet_back_stage.enums.Status;
 import com.example.intranet_back_stage.model.LeaveRequest;
 import com.example.intranet_back_stage.service.LeaveRequestService;
@@ -17,36 +18,36 @@ public class LeaveRequestController {
 
     private final LeaveRequestService leaveRequestService;
 
-    // Employé crée une demande
+    // Tous les congés (pour HR)
+    @GetMapping("/all")
+    public ResponseEntity<List<LeaveRequestDTO>> getAllRequests() {
+        return ResponseEntity.ok(leaveRequestService.getAllRequests());
+    }
+
     @PostMapping("/request/{id}")
-    public ResponseEntity<LeaveRequest> createLeaveRequest(
+    public ResponseEntity<LeaveRequestDTO> createLeaveRequest(
             @PathVariable Long id,
             @RequestBody LeaveRequest request
     ) {
-        LeaveRequest saved = leaveRequestService.createRequest(id, request);
-        return ResponseEntity.ok(saved);
+        return ResponseEntity.ok(leaveRequestService.createRequest(id, request));
     }
 
-    // Employé consulte ses demandes
     @GetMapping("/user/{id}")
-    @PreAuthorize("hasRole('HR')")
-    public ResponseEntity<List<LeaveRequest>> getUserRequests(@PathVariable Long id) {
+    public ResponseEntity<List<LeaveRequestDTO>> getUserRequests(@PathVariable Long id) {
         return ResponseEntity.ok(leaveRequestService.getUserRequests(id));
     }
 
-    // HR consulte les demandes en attente
     @GetMapping("/pending")
-    public ResponseEntity<List<LeaveRequest>> getPendingRequests() {
+    public ResponseEntity<List<LeaveRequestDTO>> getPendingRequests() {
         return ResponseEntity.ok(leaveRequestService.getPendingRequests());
     }
 
-    // HR approuve ou refuse une demande
     @PutMapping("/validate/{id}")
-    public ResponseEntity<LeaveRequest> validateRequest(
+    public ResponseEntity<LeaveRequestDTO> validateRequest(
             @PathVariable Long id,
-            @RequestParam Status status // "APPROUVÉ" ou "REFUSÉ"
+            @RequestParam Status status
     ) {
-        LeaveRequest updated = leaveRequestService.approveOrRejectRequest(id, status);
-        return ResponseEntity.ok(updated);
+        System.out.println("✅ Requête reçue : id=" + id + ", status=" + status);
+        return ResponseEntity.ok(leaveRequestService.approveOrRejectRequest(id, status));
     }
 }
