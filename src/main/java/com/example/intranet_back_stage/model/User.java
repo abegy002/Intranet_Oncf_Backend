@@ -7,6 +7,7 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -22,11 +23,17 @@ public class User implements UserDetails {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(unique = true, nullable = false, updatable = false)
+    private String employeeCode;
+
     private String username;
     private String password;
     private String firstname;
     private String lastname;
     private String email;
+
+    @Column(precision = 10, scale = 2) // Exemple : 99999999.99
+    private BigDecimal salaire;
 
     @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "job_id")
