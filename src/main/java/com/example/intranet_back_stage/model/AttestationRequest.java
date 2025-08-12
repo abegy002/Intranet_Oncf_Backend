@@ -1,6 +1,8 @@
 package com.example.intranet_back_stage.model;
 
-import com.example.intranet_back_stage.enums.Status;
+
+import com.example.intranet_back_stage.model.User;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.*;
 import java.time.LocalDateTime;
@@ -11,30 +13,33 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 @Table(name = "attestation_requests")
 public class AttestationRequest {
-
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // L’utilisateur qui fait la demande
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id")
-    private User user;
+    @JsonIgnore
+    @JoinColumn(name = "employee_id")
+    private User employee;
 
-    // Statut : PENDING, APPROVED, REJECTED
     @Enumerated(EnumType.STRING)
-    private Status status = Status.PENDING;
+    private AttestationType attestationType;
 
-    // Type d'attestation demandée (ex : "Travail", "Salaire", ...)
-    private String attestationType;
+    @Enumerated(EnumType.STRING)
+    private AttestationStatus status = AttestationStatus.EN_ATTENTE;
 
-    // Date de la demande
-    private LocalDateTime requestDate = LocalDateTime.now();
+    private String signedDocumentPath;
+    private String signedDocumentFilename;
 
-    @Column(columnDefinition = "BYTEA")
-    private byte[] attestationFile;
+    private LocalDateTime createdAt = LocalDateTime.now();
+    private LocalDateTime processedAt;
+    private LocalDateTime sentAt;
+    private String processedBy;
 
-    private String fileName; // ex: "attestation_2025.pdf"
-    private String fileType; // ex: "application/pdf"
+    public enum AttestationType { TRAVAIL, SALAIRE;
+        public static AttestationType fromString(String value) {
+            return AttestationType.valueOf(value.toUpperCase());
+        }
+    }
+    public enum AttestationStatus { EN_ATTENTE, EN_COURS, SIGNE, ENVOYE, REJETE }
 }
-

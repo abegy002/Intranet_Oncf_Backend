@@ -8,6 +8,8 @@ import lombok.AllArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -39,6 +41,20 @@ public class UserService {
         user.setFirstname(userDTO.getFirstname());
         user.setLastname(userDTO.getLastname());
         user.setEmail(userDTO.getEmail());
+        user.setSalaire(userDTO.getSalary());
+
+        String code;
+        do {
+            // Generate random alphanumeric string of 6 characters
+            code = "EMP-" + UUID.randomUUID().toString()
+                    .replaceAll("[^A-Za-z0-9]", "") // remove dashes and keep only alphanumerics
+                    .substring(0, 6)                // take first 6 characters
+                    .toUpperCase();                 // make it uppercase
+        } while (userRepo.existsByEmployeeCode(code));
+
+        user.setEmployeeCode(code);
+
+
         user.setJob(job);
         user.setRole(role);
 
@@ -83,6 +99,7 @@ public class UserService {
         user.setFirstname(dto.getFirstname());
         user.setLastname(dto.getLastname());
         user.setEmail(dto.getEmail());
+        user.setSalaire(dto.getSalary());
 
         Job job = jobRepo.findById(dto.getJobId())
                 .orElseThrow(() -> new RuntimeException("Job not found"));
@@ -116,10 +133,12 @@ public class UserService {
     private UserResponseDTO mapToDTO(User user) {
         UserResponseDTO dto = new UserResponseDTO();
         dto.setId(user.getId());
+        dto.setEmployeeCode(user.getEmployeeCode());
         dto.setUsername(user.getUsername());
         dto.setFirstname(user.getFirstname());
         dto.setLastname(user.getLastname());
         dto.setEmail(user.getEmail());
+        dto.setSalary(user.getSalaire());
 
         // Job
         if (user.getJob() != null) {

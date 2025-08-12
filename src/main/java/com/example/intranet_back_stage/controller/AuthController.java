@@ -45,6 +45,7 @@ public class AuthController {
             String jwt = jwtUtil.generateToken(loginRequest.getUsername());
 
             UserResponseDTO user = userService.getUserByUsername(loginRequest.getUsername());
+            System.out.println(user.getEmployeeCode());
 
 
             Map<String, Object> response = new HashMap<>();
