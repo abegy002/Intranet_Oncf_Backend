@@ -7,10 +7,7 @@ import com.example.intranet_back_stage.service.AttestationService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.io.Resource;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -74,11 +71,17 @@ public class AttestationController {
 
     @GetMapping("/signed/{id}")
     public ResponseEntity<Resource> downloadSigned(@PathVariable Long id) {
+        var req = service.findByIdOrThrow(id);          // add helper in service if needed
         Resource file = service.loadSignedPdfAsResource(id);
+        String filename = req.getSignedDocumentFilename() != null
+                ? req.getSignedDocumentFilename()
+                : ("attestation_" + id + "_signed.pdf");
 
         return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_PDF)
-                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"attestation_" + id + "_signed.pdf\"")
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment().filename(filename).build().toString())
                 .body(file);
     }
+
 }
