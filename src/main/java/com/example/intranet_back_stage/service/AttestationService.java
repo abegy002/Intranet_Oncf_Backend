@@ -16,7 +16,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.FileOutputStream;
 import java.math.BigDecimal;
 import java.net.MalformedURLException;
@@ -52,8 +51,7 @@ public class AttestationService {
     }
 
     public AttestationRequest process(Long id, String processor) {
-        AttestationRequest req = requestRepo.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Demande introuvable"));
+        AttestationRequest req = findByIdOrThrow(id);
 
         if (req.getStatus() == AttestationRequest.AttestationStatus.REJETE) {
             throw new IllegalStateException("Cette demande a été rejetée et ne peut plus être modifiée.");
@@ -65,15 +63,13 @@ public class AttestationService {
         return requestRepo.save(req);
     }
 
-    /** New logic: HR uploads the scanned & signed PDF on send */
+    /** HR uploads the signed PDF and the request becomes ENVOYE */
     public AttestationRequest sendWithSignedPdf(Long id, MultipartFile file) {
-        AttestationRequest req = requestRepo.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Demande introuvable"));
+        AttestationRequest req = findByIdOrThrow(id);
 
         if (req.getStatus() == AttestationRequest.AttestationStatus.REJETE) {
             throw new IllegalStateException("Cette demande a été rejetée et ne peut plus être modifiée.");
         }
-
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("Le fichier signé est requis.");
         }
@@ -82,7 +78,6 @@ public class AttestationService {
         }
 
         try {
-            // Save inside project (dev-friendly): src/main/resources/static/attestations/signed
             Path signedDir = Paths.get("src/main/resources/static/attestations/signed").toAbsolutePath();
             Files.createDirectories(signedDir);
 
@@ -93,8 +88,6 @@ public class AttestationService {
 
             req.setSignedDocumentPath(target.toString());
             req.setSignedDocumentFilename(filename);
-
-            // Set status to ENVOYE once signed file uploaded
             req.setStatus(AttestationRequest.AttestationStatus.ENVOYE);
             req.setSentAt(LocalDateTime.now());
 
@@ -106,8 +99,7 @@ public class AttestationService {
     }
 
     public AttestationRequest reject(Long id) {
-        AttestationRequest req = requestRepo.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Demande introuvable"));
+        AttestationRequest req = findByIdOrThrow(id);
         req.setStatus(AttestationRequest.AttestationStatus.REJETE);
         return requestRepo.save(req);
     }
@@ -130,15 +122,16 @@ public class AttestationService {
         return requestRepo.findByEmployeeId(userId);
     }
 
+    /** <-- Used by controller /attestations/signed/{id} before building Content-Disposition */
+    public AttestationRequest findByIdOrThrow(Long id) {
+        return requestRepo.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Demande introuvable"));
+    }
+
     /* =========================== PDF Generation =========================== */
 
-    /**
-     * Generates an UNSIGNED PDF and returns bytes.
-     * Does NOT touch DB state. (HR will sign manually offline.)
-     */
     public byte[] generatePdfAndReturnBytes(Long requestId) {
-        AttestationRequest request = requestRepo.findById(requestId)
-                .orElseThrow(() -> new RuntimeException("Request not found"));
+        AttestationRequest request = findByIdOrThrow(requestId);
 
         if (request.getStatus() == AttestationRequest.AttestationStatus.REJETE) {
             throw new IllegalStateException("Cette demande a été rejetée et ne peut plus être modifiée.");
@@ -151,7 +144,6 @@ public class AttestationService {
             PdfWriter.getInstance(document, baos);
             document.open();
 
-            // --- Logo from classpath: place your logo in src/main/resources/static/logo/Logo-oncf.png ---
             try {
                 ClassPathResource logoRes = new ClassPathResource("static/logo/Logo-oncf.png");
                 byte[] logoBytes = logoRes.getInputStream().readAllBytes();
@@ -159,9 +151,7 @@ public class AttestationService {
                 logo.scaleToFit(100, 100);
                 logo.setAlignment(Image.ALIGN_CENTER);
                 document.add(logo);
-            } catch (Exception logoEx) {
-                // If logo missing, continue without failing the whole PDF
-            }
+            } catch (Exception ignored) { }
 
             Font titleFont = new Font(Font.HELVETICA, 16, Font.BOLD);
             Font normal    = new Font(Font.HELVETICA, 12);
@@ -200,7 +190,6 @@ public class AttestationService {
                 body.add(new Chunk(formatMoney(retenue), bold));
                 body.add(new Chunk(", Salaire net : ", normal));
                 body.add(new Chunk(formatMoney(net), bold));
-
             } else {
                 body.add(new Chunk("Nous soussignés, ", normal));
                 body.add(new Chunk("M. Karim EL MANSOURI, ", bold));
@@ -228,21 +217,37 @@ public class AttestationService {
             datePlace.setAlignment(Element.ALIGN_RIGHT);
             document.add(datePlace);
 
-            // (Intentionally no signature image; HR will sign manually after printing)
             Paragraph sign = new Paragraph("\nResponsable des Ressources Humaines\n\n", bold);
             sign.setAlignment(Element.ALIGN_RIGHT);
             sign.setSpacingBefore(30);
             document.add(sign);
 
             document.close();
-
-            // Optionally, you could also keep a local unsigned copy if you want:
-            // saveUnsignedForTrace(request.getId(), baos.toByteArray());
-
             return baos.toByteArray();
 
         } catch (Exception e) {
             throw new RuntimeException("Erreur lors de la génération du PDF : " + e.getMessage(), e);
+        }
+    }
+
+    /* =========================== File access =========================== */
+
+    /** <-- Used by controller to actually stream the signed PDF by request id */
+    public Resource loadSignedPdfAsResource(Long id) {
+        AttestationRequest req = findByIdOrThrow(id);
+
+        if (req.getSignedDocumentPath() == null) {
+            throw new IllegalStateException("Aucun fichier signé n'est associé à cette demande.");
+        }
+        try {
+            Path path = Paths.get(req.getSignedDocumentPath()).toAbsolutePath().normalize();
+            Resource resource = new UrlResource(path.toUri());
+            if (!resource.exists() || !resource.isReadable()) {
+                throw new IllegalStateException("Fichier signé introuvable ou illisible.");
+            }
+            return resource;
+        } catch (MalformedURLException e) {
+            throw new RuntimeException("Chemin de fichier invalide : " + e.getMessage(), e);
         }
     }
 
@@ -262,27 +267,6 @@ public class AttestationService {
             try (FileOutputStream fos = new FileOutputStream(file.toFile())) {
                 fos.write(bytes);
             }
-        } catch (Exception ignored) {
-        }
-    }
-
-    public Resource loadSignedPdfAsResource(Long id) {
-        AttestationRequest req = requestRepo.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Demande introuvable"));
-
-        if (req.getSignedDocumentPath() == null) {
-            throw new IllegalStateException("Aucun fichier signé n'est associé à cette demande.");
-        }
-
-        try {
-            Path path = Paths.get(req.getSignedDocumentPath()).toAbsolutePath().normalize();
-            Resource resource = new UrlResource(path.toUri());
-            if (!resource.exists() || !resource.isReadable()) {
-                throw new IllegalStateException("Fichier signé introuvable ou illisible.");
-            }
-            return resource;
-        } catch (MalformedURLException e) {
-            throw new RuntimeException("Chemin de fichier invalide : " + e.getMessage(), e);
-        }
+        } catch (Exception ignored) { }
     }
 }
