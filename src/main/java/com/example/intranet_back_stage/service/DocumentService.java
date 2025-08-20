@@ -1,134 +1,201 @@
 package com.example.intranet_back_stage.service;
 
-import com.example.intranet_back_stage.dto.DocumentDTO;
-import com.example.intranet_back_stage.enums.DocumentType;
+import com.example.intranet_back_stage.dto.DocumentCreateDto;
+import com.example.intranet_back_stage.dto.DocumentDto;
+import com.example.intranet_back_stage.dto.VersionDto;
 import com.example.intranet_back_stage.model.Document;
-import com.example.intranet_back_stage.model.DocumentFolder;
-import com.example.intranet_back_stage.model.DocumentSpace;
-import com.example.intranet_back_stage.model.User;
-import com.example.intranet_back_stage.repository.DocumentFolderRepository;
+import com.example.intranet_back_stage.model.DocumentAudit;
+import com.example.intranet_back_stage.model.DocumentVersion;
+import com.example.intranet_back_stage.model.Folder;
+import com.example.intranet_back_stage.repository.DocumentAuditRepository;
 import com.example.intranet_back_stage.repository.DocumentRepository;
-import com.example.intranet_back_stage.repository.DocumentSpaceRepository;
-import com.example.intranet_back_stage.repository.UserRepository;
+import com.example.intranet_back_stage.repository.DocumentVersionRepository;
+import com.example.intranet_back_stage.repository.FolderRepository;
+import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.Resource;
-import org.springframework.core.io.UrlResource;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.IOException;
-import java.nio.file.*;
+import java.net.URL;
+import java.text.Normalizer;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.List;
-import java.util.UUID;
-import java.util.stream.Collectors;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
-@Transactional
 public class DocumentService {
 
-    private final DocumentRepository documentRepository;
-    private final DocumentSpaceRepository spaceRepository;
-    private final DocumentFolderRepository folderRepository;
-    private final UserRepository userRepository;
+    private final DocumentRepository docRepo;
+    private final DocumentVersionRepository verRepo;
+    private final DocumentAuditRepository auditRepo;
+    private final FolderRepository folderRepo;
+    private final StorageService storage;
 
-    @Value("${app.upload.dir:uploads}")
-    private String uploadDir;
+    // ⬇️ NEW: inject the icon/Logo service
+    private final FileIconService fileIconService;
 
-    public DocumentDTO uploadDocument(MultipartFile file, Long spaceId, Long folderId,
-                                      String description, Long userId) throws IOException {
-        User user = userRepository.findById(userId).orElseThrow(() -> new RuntimeException("User not found"));
-        DocumentSpace space = spaceRepository.findById(spaceId).orElseThrow(() -> new RuntimeException("Space not found"));
+    @Transactional
+    public DocumentDto create(DocumentCreateDto meta, MultipartFile file, String username) throws Exception {
+        Folder folder = (meta.folderId()!=null)
+                ? folderRepo.findById(meta.folderId()).orElseThrow(() -> new IllegalArgumentException("Folder not found"))
+                : null;
 
-        Path uploadPath = Paths.get(uploadDir);
-        if (!Files.exists(uploadPath)) Files.createDirectories(uploadPath);
+        Document d = new Document();
+        d.setFolder(folder);
+        d.setTitle(meta.title());
+        d.setDocType(meta.docType());
+        d.setStatus(Optional.ofNullable(meta.status()).orElse("BROUILLON"));
+        d.setSensitivity(Optional.ofNullable(meta.sensitivity()).orElse("INTERNE"));
+        d.setOwner(username);
+        d.setCreatedAt(LocalDateTime.now());
+        d = docRepo.save(d);
 
-        String originalFilename = file.getOriginalFilename();
-        String fileExtension = originalFilename != null && originalFilename.contains(".")
-                ? originalFilename.substring(originalFilename.lastIndexOf("."))
-                : "";
-        String uniqueFilename = UUID.randomUUID() + fileExtension;
-        Path filePath = uploadPath.resolve(uniqueFilename);
+        addVersionInternal(d, file, "1.0", username, "Initial upload");
+        audit("CREATE", d.getId(), username, "Created with 1.0");
+        return toDto(d);
+    }
 
-        Files.copy(file.getInputStream(), filePath, StandardCopyOption.REPLACE_EXISTING);
+    public Page<DocumentDto> getAll(Pageable p) {
+        return docRepo.findAll(p).map(this::toDto);
+    }
 
-        Document document = new Document();
-        document.setName(originalFilename);
-        document.setOriginalName(originalFilename);
-        document.setFilePath(filePath.toString());
-        document.setFileSize(file.getSize());
-        document.setMimeType(file.getContentType());
-        document.setDocumentType(DocumentType.fromMimeType(file.getContentType()));
-        document.setDescription(description);
-        document.setDocumentSpace(space);
-        document.setUploadedBy(user);
+    public Page<DocumentDto> getByFolder(Long folderId, Pageable p, String q) {
+        String query = (q == null) ? "" : q.trim();
+        Specification<Document> spec = (root, cq, cb) -> {
+            var folderExpr = root.get("folder");
+            var inFolder = (folderId == null) ? cb.isNull(folderExpr) : cb.equal(folderExpr.get("id"), folderId);
+            if (query.isEmpty()) return inFolder;
+            var titleLike = cb.like(cb.lower(root.get("title")), "%" + query.toLowerCase() + "%");
+            var typeLike  = cb.like(cb.lower(root.get("docType")), "%" + query.toLowerCase() + "%");
+            return cb.and(inFolder, cb.or(titleLike, typeLike));
+        };
+        return docRepo.findAll(spec, p).map(this::toDto);
+    }
 
-        if (folderId != null) {
-            DocumentFolder folder = folderRepository.findById(folderId)
-                    .orElseThrow(() -> new RuntimeException("Folder not found"));
-            document.setFolder(folder);
+    public DocumentDto getById(Long id) {
+        Document d = docRepo.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Document not found: " + id));
+        return toDto(d);
+    }
+
+    @Transactional
+    public VersionDto addVersion(Long docId, MultipartFile file, String versionNo, String username, String comment) throws Exception {
+        Document d = docRepo.findById(docId).orElseThrow();
+        VersionDto v = addVersionInternal(d, file, versionNo, username, comment);
+        audit("UPDATE", d.getId(), username, "New version " + versionNo);
+        return v;
+    }
+
+    private VersionDto addVersionInternal(Document d, MultipartFile file, String versionNo, String username, String comment) throws Exception {
+        if (file == null || file.isEmpty()) throw new IllegalArgumentException("File required");
+
+        String folderPath = (d.getFolder() == null)
+                ? "root"
+                : sanitizeFolderPath(d.getFolder().getPath());
+        String titleSlug = slug(d.getTitle());
+        String safeOriginal = sanitizeFilename(file.getOriginalFilename());
+
+        String objectKey = String.format("docs/%s/%s/v%s/%s",
+                folderPath, titleSlug, versionNo, safeOriginal);
+
+        String key = storage.put(
+                file.getInputStream(),
+                file.getSize(),
+                file.getContentType(),
+                objectKey
+        );
+
+        DocumentVersion v = new DocumentVersion();
+        v.setDocument(d);
+        v.setVersionNo(versionNo);
+        v.setFilename(file.getOriginalFilename());
+        v.setStorageKey(key);
+        v.setSize(file.getSize());
+        v.setCreatedBy(username);
+        v.setCreatedAt(LocalDateTime.now());
+        v.setComment(comment);
+        verRepo.save(v);
+
+        d.setUpdatedAt(LocalDateTime.now());
+        docRepo.save(d);
+
+        return new VersionDto(v.getId(), v.getVersionNo(), v.getFilename(), v.getSize(), v.getCreatedBy(), v.getCreatedAt());
+    }
+
+    public URL downloadUrl(Long versionId, Duration ttl, String username) throws Exception {
+        DocumentVersion v = verRepo.findById(versionId).orElseThrow();
+        audit("DOWNLOAD", v.getDocument().getId(), username, "v=" + v.getVersionNo());
+        return storage.getSignedUrl(v.getStorageKey(), ttl);
+    }
+
+    public Page<DocumentDto> search(String q, Pageable p) {
+        return docRepo.findByTitleContainingIgnoreCaseOrDocTypeContainingIgnoreCase(q, q, p)
+                .map(this::toDto);
+    }
+
+    private DocumentDto toDto(Document d) {
+        List<VersionDto> versions = verRepo.findByDocumentIdOrderByCreatedAtDesc(d.getId()).stream()
+                .map(v -> new VersionDto(v.getId(), v.getVersionNo(), v.getFilename(), v.getSize(), v.getCreatedBy(), v.getCreatedAt()))
+                .toList();
+
+        // ⬇️ NEW: compute icon/logo url based on latest filename (falls back to docType)
+        String latestFilename = versions.isEmpty() ? null : versions.get(0).filename();
+        String iconUrl = fileIconService.iconFor(d.getDocType(), latestFilename);
+
+        return new DocumentDto(
+                d.getId(), d.getTitle(), d.getDocType(), d.getStatus(), d.getSensitivity(),
+                d.getOwner(), d.getCreatedAt(), d.getUpdatedAt(), versions, iconUrl
+        );
+    }
+
+    private void audit(String action, Long docId, String actor, String details) {
+        auditRepo.save(new DocumentAudit(null, docId, action, actor, LocalDateTime.now(), details));
+    }
+
+    @Transactional
+    public void delete(Long docId, String username) {
+        Document d = docRepo.findById(docId)
+                .orElseThrow(() -> new IllegalArgumentException("Document not found: " + docId));
+
+        List<DocumentVersion> versions = verRepo.findByDocumentIdOrderByCreatedAtDesc(docId);
+
+        for (DocumentVersion v : versions) {
+            try {
+                if (v.getStorageKey() != null) storage.delete(v.getStorageKey());
+            } catch (Exception ex) {
+                System.err.println("Failed to delete blob: " + v.getStorageKey() + " -> " + ex.getMessage());
+            }
         }
 
-        return convertToDTO(documentRepository.save(document));
+        verRepo.deleteAll(versions);
+        docRepo.delete(d);
+        audit("DELETE", docId, username, "Document and " + versions.size() + " version(s) removed");
     }
 
-    public Resource downloadDocument(Long documentId) throws IOException {
-        Document doc = documentRepository.findById(documentId)
-                .orElseThrow(() -> new RuntimeException("Document not found"));
-        Path filePath = Paths.get(doc.getFilePath());
-        Resource resource = new UrlResource(filePath.toUri());
-        if (!resource.exists() || !resource.isReadable())
-            throw new RuntimeException("File not readable");
-        return resource;
+    /* helpers (unchanged) */
+    private String sanitizeFolderPath(String dbPath) { /* ... */ return (dbPath==null||dbPath.isBlank())?"root":dbPath.replaceAll("^/+","").replaceAll("/+","/"); }
+    private String slug(String s) { /* ... */
+        if (s == null) return "untitled";
+        String n = Normalizer.normalize(s.trim(), Normalizer.Form.NFD).replaceAll("\\p{M}+","");
+        n = n.replaceAll("[^a-zA-Z0-9-_ ]","").replace("","-");
+        n = n.replaceAll("-{2,}", "-");
+        return n.isBlank() ? "untitled" : n.toLowerCase();
     }
-
-    public void deleteDocument(Long documentId) throws IOException {
-        Document doc = documentRepository.findById(documentId)
-                .orElseThrow(() -> new RuntimeException("Document not found"));
-        Path filePath = Paths.get(doc.getFilePath());
-        if (Files.exists(filePath)) Files.delete(filePath);
-        documentRepository.delete(doc);
+    private String sanitizeFilename(String original) { /* ... */
+        if (original == null || original.isBlank()) return "file";
+        String ext = getExtension(original);
+        String base = original.substring(0, original.length() - ext.length());
+        String safeBase = slug(base);
+        return ext.isEmpty() ? safeBase : safeBase + ext.toLowerCase();
     }
-
-    public DocumentDTO getDocumentById(Long id) {
-        Document doc = documentRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Document not found"));
-        return convertToDTO(doc);
-    }
-
-    public List<DocumentDTO> getDocumentsByFolder(Long folderId) {
-        return documentRepository.findByFolderId(folderId)
-                .stream().map(this::convertToDTO).collect(Collectors.toList());
-    }
-
-    public List<DocumentDTO> getDocumentsBySpace(Long spaceId) {
-        return documentRepository.findByDocumentSpaceId(spaceId)
-                .stream().map(this::convertToDTO).collect(Collectors.toList());
-    }
-
-    public List<DocumentDTO> searchByName(String keyword) {
-        return documentRepository.findByNameContaining(keyword)
-                .stream().map(this::convertToDTO).collect(Collectors.toList());
-    }
-
-    private DocumentDTO convertToDTO(Document document) {
-        DocumentDTO dto = new DocumentDTO();
-        dto.setId(document.getId());
-        dto.setName(document.getName());
-        dto.setOriginalName(document.getOriginalName());
-        dto.setFilePath(document.getFilePath());
-        dto.setFileSize(document.getFileSize());
-        dto.setMimeType(document.getMimeType());
-        dto.setDocumentType(document.getDocumentType());
-        dto.setDescription(document.getDescription());
-        dto.setFolderId(document.getFolder() != null ? document.getFolder().getId() : null);
-        dto.setDocumentSpaceId(document.getDocumentSpace() != null ? document.getDocumentSpace().getId() : null);
-        dto.setUploadedBy(document.getUploadedBy() != null ? document.getUploadedBy().getUsername() : null);
-        dto.setUploadedAt(document.getUploadedAt());
-        dto.setUpdatedAt(document.getUpdatedAt());
-        dto.setDownloadUrl("/documents/" + document.getId() + "/download");
-        return dto;
+    private String getExtension(String filename) { /* ... */
+        int dot = filename.lastIndexOf('.');
+        if (dot < 0 || dot == filename.length() - 1) return "";
+        return filename.substring(dot).replaceAll("[^a-zA-Z0-9.]", "").toLowerCase();
     }
 }
