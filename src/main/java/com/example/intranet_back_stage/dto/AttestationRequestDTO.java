@@ -1,18 +1,16 @@
 package com.example.intranet_back_stage.dto;
 
 
-import jakarta.validation.constraints.NotBlank;
-import lombok.AllArgsConstructor;
+import com.example.intranet_back_stage.model.AttestationRequest;
+import jakarta.validation.constraints.NotNull;
 import lombok.Data;
-import lombok.NoArgsConstructor;
 
 @Data
-@NoArgsConstructor
-@AllArgsConstructor
 public class AttestationRequestDTO {
-    Long id;
+    @NotNull
+    private Long userId;
 
-    @NotBlank(message = "Le type d'attestation est obligatoire")
-    private String attestationType;
+    @NotNull
+    private AttestationRequest.AttestationType attestationType;
 }
 
