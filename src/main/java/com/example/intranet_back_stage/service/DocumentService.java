@@ -36,8 +36,19 @@ public class DocumentService {
     private final FolderRepository folderRepo;
     private final StorageService storage;
 
-    // ⬇️ NEW: inject the icon/Logo service
+    // icons
     private final FileIconService fileIconService;
+
+    // notifications
+    private final NotificationService notificationService;
+
+    // Notification type keys
+    private static final String TYPE_DOC_CREATED    = "DOC_CREATED";
+    private static final String TYPE_DOC_NEWVER     = "DOC_NEW_VERSION";
+
+    // Role names that should receive doc updates (adjust if yours differ)
+    private static final String ROLE_EMPLOYEE       = "USER";
+    private static final String ROLE_DOCS_VIEWER    = "DOCS_VIEWER";
 
     @Transactional
     public DocumentDto create(DocumentCreateDto meta, MultipartFile file, String username) throws Exception {
@@ -47,7 +58,7 @@ public class DocumentService {
 
         Document d = new Document();
         d.setFolder(folder);
-        d.setTitle(meta.title());
+        d.setTitle(meta.title());                 // keep extension if you send it from FE
         d.setDocType(meta.docType());
         d.setStatus(Optional.ofNullable(meta.status()).orElse("BROUILLON"));
         d.setSensitivity(Optional.ofNullable(meta.sensitivity()).orElse("INTERNE"));
@@ -57,6 +68,15 @@ public class DocumentService {
 
         addVersionInternal(d, file, "1.0", username, "Initial upload");
         audit("CREATE", d.getId(), username, "Created with 1.0");
+
+        // 🔔 notify employees that a new document is available
+        String title = "Nouveau document: " + d.getTitle();
+        String message = "Ajouté" + (folder != null ? " dans " + folder.getPath() : " à la racine") + ".";
+        String link = uiDocListLink(d.getId(), folder);
+        // fan-out to typical employee roles
+        safeNotifyRole(ROLE_EMPLOYEE, TYPE_DOC_CREATED, title, message, link, username);
+        safeNotifyRole(ROLE_DOCS_VIEWER, TYPE_DOC_CREATED, title, message, link, username);
+
         return toDto(d);
     }
 
@@ -88,6 +108,14 @@ public class DocumentService {
         Document d = docRepo.findById(docId).orElseThrow();
         VersionDto v = addVersionInternal(d, file, versionNo, username, comment);
         audit("UPDATE", d.getId(), username, "New version " + versionNo);
+
+        // 🔔 notify employees about the new version
+        String nTitle = "Nouvelle version: " + d.getTitle() + " (v" + versionNo + ")";
+        String nMsg   = "Ajoutée par " + username + ".";
+        String link   = uiDocListLink(d.getId(), d.getFolder());
+        safeNotifyRole(ROLE_EMPLOYEE, TYPE_DOC_NEWVER, nTitle, nMsg, link, username);
+        safeNotifyRole(ROLE_DOCS_VIEWER, TYPE_DOC_NEWVER, nTitle, nMsg, link, username);
+
         return v;
     }
 
@@ -143,7 +171,6 @@ public class DocumentService {
                 .map(v -> new VersionDto(v.getId(), v.getVersionNo(), v.getFilename(), v.getSize(), v.getCreatedBy(), v.getCreatedAt()))
                 .toList();
 
-        // ⬇️ NEW: compute icon/logo url based on latest filename (falls back to docType)
         String latestFilename = versions.isEmpty() ? null : versions.get(0).filename();
         String iconUrl = fileIconService.iconFor(d.getDocType(), latestFilename);
 
@@ -175,27 +202,56 @@ public class DocumentService {
         verRepo.deleteAll(versions);
         docRepo.delete(d);
         audit("DELETE", docId, username, "Document and " + versions.size() + " version(s) removed");
+
+        // (Optional) you can notify HR/Admin about deletions if needed.
+        // notificationService.createForHrAndAdmin(...);
     }
 
-    /* helpers (unchanged) */
-    private String sanitizeFolderPath(String dbPath) { /* ... */ return (dbPath==null||dbPath.isBlank())?"root":dbPath.replaceAll("^/+","").replaceAll("/+","/"); }
-    private String slug(String s) { /* ... */
+    /* ------------ helpers ------------ */
+
+    private String sanitizeFolderPath(String dbPath) {
+        if (dbPath == null || dbPath.isBlank()) return "root";
+        String p = dbPath.replaceAll("^/+", "");
+        return p.replaceAll("/+", "/");
+    }
+
+    private String slug(String s) {
         if (s == null) return "untitled";
         String n = Normalizer.normalize(s.trim(), Normalizer.Form.NFD).replaceAll("\\p{M}+","");
-        n = n.replaceAll("[^a-zA-Z0-9-_ ]","").replace("","-");
+        n = n.replaceAll("[^a-zA-Z0-9-_ ]","").replace(' ','-'); // ✅ fix here
         n = n.replaceAll("-{2,}", "-");
         return n.isBlank() ? "untitled" : n.toLowerCase();
     }
-    private String sanitizeFilename(String original) { /* ... */
+
+    private String sanitizeFilename(String original) {
         if (original == null || original.isBlank()) return "file";
         String ext = getExtension(original);
         String base = original.substring(0, original.length() - ext.length());
         String safeBase = slug(base);
         return ext.isEmpty() ? safeBase : safeBase + ext.toLowerCase();
     }
-    private String getExtension(String filename) { /* ... */
+
+    private String getExtension(String filename) {
         int dot = filename.lastIndexOf('.');
         if (dot < 0 || dot == filename.length() - 1) return "";
         return filename.substring(dot).replaceAll("[^a-zA-Z0-9.]", "").toLowerCase();
+    }
+
+    private String uiDocListLink(Long docId, Folder folder) {
+        // Adjust to your Angular routes.
+        // Example: a list page that can highlight a doc by query param:
+        //   /app/docs?docId=123 or /app/docs?folderId=456&docId=123
+        if (folder != null) {
+            return "/app/docs?folderId=" + folder.getId() + "&docId=" + docId;
+        }
+        return "/app/docs?root=true&docId=" + docId;
+    }
+
+    private void safeNotifyRole(String role, String type, String title, String message, String link, String actor) {
+        try {
+            notificationService.createForRole(role, type, title, message, link, actor);
+        } catch (Exception ignored) {
+            // swallow to avoid breaking document flows if role doesn't exist in some envs
+        }
     }
 }
