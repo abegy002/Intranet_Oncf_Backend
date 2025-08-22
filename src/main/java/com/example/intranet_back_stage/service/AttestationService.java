@@ -35,6 +35,15 @@ public class AttestationService {
     private final AttestationRequestRepository requestRepo;
     private final UserRepository userRepo;
 
+    // ⬇️ Inject your notification service
+    private final NotificationService notificationService;
+
+    /* ==== Notification type keys (free-form strings, keep consistent in UI) ==== */
+    private static final String TYPE_ATTESTATION_SUBMITTED = "ATTESTATION_SUBMITTED";
+    private static final String TYPE_ATTESTATION_IN_PROGRESS = "ATTESTATION_IN_PROGRESS";
+    private static final String TYPE_ATTESTATION_SENT = "ATTESTATION_SENT";
+    private static final String TYPE_ATTESTATION_REJECTED = "ATTESTATION_REJECTED";
+
     /* =========================== Commands =========================== */
 
     public AttestationRequest submit(AttestationRequestDTO dto) {
@@ -47,7 +56,33 @@ public class AttestationService {
         req.setStatus(AttestationRequest.AttestationStatus.EN_ATTENTE);
         req.setCreatedAt(LocalDateTime.now());
 
-        return requestRepo.save(req);
+        req = requestRepo.save(req);
+
+        // 🔔 Notify HR + ADMIN that a new request was submitted
+        String hrAdminTitle = "Nouvelle demande d’attestation";
+        String hrAdminMsg = String.format(
+                "%s %s a soumis une demande d’attestation (%s).",
+                employee.getFirstname(), employee.getLastname(), dto.getAttestationType().name()
+        );
+        notificationService.createForHrAndAdmin(
+                TYPE_ATTESTATION_SUBMITTED,
+                hrAdminTitle,
+                hrAdminMsg,
+                uiRequestDetailUrlForManagers(req.getId()),
+                employee.getUsername() // actor = employee
+        );
+
+        // (Optional) 🔔 Acknowledge to employee
+        notificationService.createForUser(
+                employee.getId(),
+                employee.getUsername(),
+                TYPE_ATTESTATION_SUBMITTED,
+                "Votre demande d’attestation a été soumise",
+                "Nous vous informerons dès qu’elle sera prise en charge.",
+                employee.getUsername()
+        );
+
+        return req;
     }
 
     public AttestationRequest process(Long id, String processor) {
@@ -60,7 +95,20 @@ public class AttestationService {
         req.setStatus(AttestationRequest.AttestationStatus.EN_COURS);
         req.setProcessedBy(processor);
         req.setProcessedAt(LocalDateTime.now());
-        return requestRepo.save(req);
+        req = requestRepo.save(req);
+
+        // 🔔 Notify employee that HR/ADMIN started processing
+        User employee = req.getEmployee();
+        notificationService.createForUser(
+                employee.getId(),
+                employee.getUsername(),
+                TYPE_ATTESTATION_IN_PROGRESS,
+                "Votre demande d’attestation est en cours de traitement",
+                "Un RH/Administrateur a pris en charge votre demande.",
+                processor // actor = HR/ADMIN username
+        );
+
+        return req;
     }
 
     /** HR uploads the signed PDF and the request becomes ENVOYE */
@@ -91,7 +139,24 @@ public class AttestationService {
             req.setStatus(AttestationRequest.AttestationStatus.ENVOYE);
             req.setSentAt(LocalDateTime.now());
 
-            return requestRepo.save(req);
+            req = requestRepo.save(req);
+
+            // 🔔 Notify employee with a direct download link or UI page
+            User employee = req.getEmployee();
+            String title = "Votre attestation est prête";
+            String msg = "Votre attestation signée a été envoyée. Cliquez pour la télécharger.";
+            // If you expose a REST endpoint like /attestations/signed/{id}, use it as link:
+            String link = apiSignedDownloadUrl(req.getId()); // or uiRequestDetailUrlForEmployee(req.getId())
+            notificationService.createForUser(
+                    employee.getId(),
+                    employee.getUsername(),
+                    TYPE_ATTESTATION_SENT,
+                    title,
+                    msg,
+                    req.getProcessedBy() != null ? req.getProcessedBy() : "system"
+            );
+
+            return req;
 
         } catch (Exception e) {
             throw new RuntimeException("Erreur lors de l'enregistrement du fichier signé : " + e.getMessage(), e);
@@ -101,7 +166,20 @@ public class AttestationService {
     public AttestationRequest reject(Long id) {
         AttestationRequest req = findByIdOrThrow(id);
         req.setStatus(AttestationRequest.AttestationStatus.REJETE);
-        return requestRepo.save(req);
+        req = requestRepo.save(req);
+
+        // 🔔 Notify employee that their request was rejected
+        User employee = req.getEmployee();
+        notificationService.createForUser(
+                employee.getId(),
+                employee.getUsername(),
+                TYPE_ATTESTATION_REJECTED,
+                "Votre demande d’attestation a été rejetée",
+                "Veuillez contacter le service RH pour plus d’informations.",
+                req.getProcessedBy() != null ? req.getProcessedBy() : "system"
+        );
+
+        return req;
     }
 
     /* =========================== Queries =========================== */
@@ -268,5 +346,28 @@ public class AttestationService {
                 fos.write(bytes);
             }
         } catch (Exception ignored) { }
+    }
+
+    /* =========================== URL builders (adjust to your routes) =========================== */
+
+    // Manager/HR view of a specific request
+    private String uiRequestDetailUrlForManagers(Long reqId) {
+        return "/app/attestations/requests/" + reqId;
+    }
+
+    // Employee view of their request
+    private String uiRequestDetailUrlForEmployee(Long reqId) {
+        return "/app/attestations/mine/" + reqId;
+    }
+
+    // Employee "My requests" list
+    private String uiMyRequestsUrl() {
+        return "/app/attestations/mine";
+    }
+
+    // Direct backend download endpoint (if you expose it in a controller)
+    private String apiSignedDownloadUrl(Long reqId) {
+        // e.g., GET /attestations/signed/{id}
+        return "/attestations/signed/" + reqId;
     }
 }

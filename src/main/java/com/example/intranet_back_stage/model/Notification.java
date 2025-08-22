@@ -37,10 +37,6 @@ public class Notification {
     @Column(length = 1000)
     private String message;
 
-    /** Internal router link or absolute URL */
-    @Column(length = 500)
-    private String linkUrl;
-
     /** Optional JSON payload for future extension */
     @Lob
     private String payloadJson;
