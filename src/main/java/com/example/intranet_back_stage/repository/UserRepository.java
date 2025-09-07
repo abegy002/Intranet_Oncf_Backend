@@ -1,11 +1,13 @@
 package com.example.intranet_back_stage.repository;
 
+import com.example.intranet_back_stage.enums.UserStatus;
 import com.example.intranet_back_stage.model.User;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -17,6 +19,9 @@ public interface UserRepository extends JpaRepository<User, Long> {
     Optional<User> findById(Long id);
 
     Optional<User> findByUsername(String username);
+
+    @Query("select u from User u where u.role.name = :roleName")
+    List<User> findAllByRoleName(@Param("roleName") String roleName);
 
     List<User> findAll();
 
@@ -35,4 +40,10 @@ public interface UserRepository extends JpaRepository<User, Long> {
     /** Return pairs of (id, username) for users having ANY of the given role names */
     @Query("select u.id, u.username from User u join u.role r where r.name in :roleNames")
     List<Object[]> findIdAndUsernameByRoles(@Param("roleNames") Collection<String> roleNames);
+
+    List<User> findByLastSeenIsNullOrLastSeenBefore(LocalDateTime before);
+
+    List<User> findByLastSeenAfter(LocalDateTime after);
+
+    List<User> findByStatus(UserStatus status);
 }

@@ -1,14 +1,19 @@
 package com.example.intranet_back_stage.service;
 
 import com.example.intranet_back_stage.dto.*;
+import com.example.intranet_back_stage.enums.UserStatus;
 import com.example.intranet_back_stage.model.*;
 import com.example.intranet_back_stage.repository.*;
 import jakarta.transaction.Transactional;
 import lombok.AllArgsConstructor;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -24,6 +29,7 @@ public class UserService {
     private final PermissionRepository permRepo;
     private final DepartmentRepository departmentRepo;
     private final JobRepository jobRepo;
+    private final SimpMessagingTemplate messagingTemplate;
 
     public void createUserWithRole(UserDTO userDTO) {
         if (userRepo.findByUsername(userDTO.getUsername()).isPresent()) {
@@ -42,6 +48,9 @@ public class UserService {
         user.setLastname(userDTO.getLastname());
         user.setEmail(userDTO.getEmail());
         user.setSalaire(userDTO.getSalary());
+        user.setHireDate(userDTO.getHireDate());
+        user.setCin(userDTO.getCin());
+        user.setPhoneNumber(userDTO.getPhoneNumber());
 
         String code;
         do {
@@ -100,6 +109,11 @@ public class UserService {
         user.setLastname(dto.getLastname());
         user.setEmail(dto.getEmail());
         user.setSalaire(dto.getSalary());
+        // ... inside updateUser(Long id, UserDTO dto)
+        user.setHireDate(dto.getHireDate());
+        user.setCin(dto.getCin());
+        user.setPhoneNumber(dto.getPhoneNumber());
+
 
         Job job = jobRepo.findById(dto.getJobId())
                 .orElseThrow(() -> new RuntimeException("Job not found"));
@@ -139,6 +153,11 @@ public class UserService {
         dto.setLastname(user.getLastname());
         dto.setEmail(user.getEmail());
         dto.setSalary(user.getSalaire());
+        dto.setHireDate(user.getHireDate());
+        dto.setCin(user.getCin());
+        dto.setPhoneNumber(user.getPhoneNumber());
+        dto.setStatus(user.getStatus());
+        dto.setLastSeen(user.getLastSeen());
 
         // Job
         if (user.getJob() != null) {
@@ -196,5 +215,97 @@ public class UserService {
 
         user.getPermissions().removeIf(p -> p.getId().equals(permissionId));
         userRepo.save(user);
+    }
+
+    public void changePassword(Long userId, String currentPassword, String newPassword) {
+        if (!StringUtils.hasText(currentPassword) || !StringUtils.hasText(newPassword)) {
+            throw new RuntimeException("Both current and new passwords are required");
+        }
+
+        User user = userRepo.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        // Verify current password
+        if (!passwordEncoder.matches(currentPassword, user.getPassword())) {
+            throw new RuntimeException("Current password is incorrect");
+        }
+
+        // Prevent reusing the same password
+        if (passwordEncoder.matches(newPassword, user.getPassword())) {
+            throw new RuntimeException("New password must be different from the current password");
+        }
+
+        // (Optional) basic strength check; keep if you want an extra guard
+        // if (!newPassword.matches("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[\\W_]).+$")) {
+        //     throw new RuntimeException("Password must contain upper, lower, digit and special character");
+        // }
+
+        user.setPassword(passwordEncoder.encode(newPassword));
+        userRepo.save(user);
+    }
+
+    // ... keep all your existing methods
+
+    public void setCurrentUserStatus(User authUser, UserStatus status) {
+        if (authUser == null) return; // null-safe
+        User u = userRepo.findById(authUser.getId())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+        u.setStatus(status);
+        u.setLastSeen(LocalDateTime.now());
+        userRepo.save(u);
+        publishPresence(u);            // <- notify subscribers
+    }
+
+    /** Null-safe heartbeat (can be called from filter or endpoint) */
+    public void heartbeat(User authUser) {
+        if (authUser == null) return;  // prevent NPE when anonymous
+        User u = userRepo.findById(authUser.getId())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+        u.setLastSeen(LocalDateTime.now());
+        if (u.getStatus() != UserStatus.ONLINE) {
+            u.setStatus(UserStatus.ONLINE);
+        }
+        userRepo.save(u);
+        publishPresence(u);            // <- notify subscribers
+    }
+
+    /** Mark users AWAY/OFFLINE if stale and broadcast changes */
+    public int markStaleUsers(Duration awayAfter, Duration offlineAfter) {
+        LocalDateTime now = LocalDateTime.now();
+        List<User> all = userRepo.findAll();
+        int changed = 0;
+        for (User u : all) {
+            LocalDateTime ls = u.getLastSeen();
+            UserStatus next = u.getStatus();
+            if (ls == null) {
+                next = UserStatus.OFFLINE;
+            } else {
+                var since = Duration.between(ls, now);
+                if (since.compareTo(offlineAfter) > 0) {
+                    next = UserStatus.OFFLINE;
+                } else if (since.compareTo(awayAfter) > 0) {
+                    next = UserStatus.AWAY;
+                } else {
+                    next = UserStatus.ONLINE;
+                }
+            }
+            if (next != u.getStatus()) {
+                u.setStatus(next);
+                userRepo.save(u);
+                publishPresence(u);    // <- notify subscribers
+                changed++;
+            }
+        }
+        return changed;
+    }
+
+    private void publishPresence(User u) {
+        PresenceEvent evt = new PresenceEvent(
+                u.getId(),
+                u.getUsername(),
+                u.getStatus(),
+                u.getLastSeen() == null ? null : u.getLastSeen().atZone(java.time.ZoneId.systemDefault()).toInstant()
+        );
+        messagingTemplate.convertAndSend("/topic/presence", evt);
     }
 }

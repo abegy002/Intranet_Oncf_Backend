@@ -8,6 +8,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 
 @Data
@@ -31,6 +32,10 @@ public class UserDTO {
     @NotBlank(message = "Email is required")
     @Email(message = "Email should be valid")
     private String email;
+
+    private LocalDate hireDate;
+    private String cin;
+    private String phoneNumber;
 
     @NotBlank(message = "Salary is required")
     private BigDecimal salary;

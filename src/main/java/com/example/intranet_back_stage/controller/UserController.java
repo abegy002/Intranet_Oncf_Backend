@@ -1,12 +1,17 @@
 package com.example.intranet_back_stage.controller;
 
+import com.example.intranet_back_stage.dto.ChangePasswordRequest;
 import com.example.intranet_back_stage.dto.UserDTO;
 import com.example.intranet_back_stage.dto.UserResponseDTO;
+import com.example.intranet_back_stage.enums.UserStatus;
 import com.example.intranet_back_stage.model.Permission;
 import com.example.intranet_back_stage.model.User;
 import com.example.intranet_back_stage.service.RoleService;
 import com.example.intranet_back_stage.service.UserService;
+import jakarta.validation.Valid;
+import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -75,5 +80,34 @@ public class UserController {
     public ResponseEntity<?> deleteUser(@PathVariable Long id) {
         userService.deleteUser(id);
         return ResponseEntity.ok(Map.of("message", "User deleted successfully!"));
+    }
+
+    @PostMapping("/change-password")
+    public ResponseEntity<?> changePassword(@AuthenticationPrincipal User authUser,
+                                            @Valid @RequestBody ChangePasswordRequest body) {
+        try {
+            userService.changePassword(authUser.getId(), body.getCurrentPassword(), body.getNewPassword());
+            return ResponseEntity.status(HttpStatus.NO_CONTENT).build(); // 204, matches Observable<void>
+        } catch (RuntimeException ex) {
+            return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage()));
+        }
+    }
+
+    @PostMapping("/me/heartbeat")
+    public ResponseEntity<Void> heartbeat(@AuthenticationPrincipal User authUser) {
+        userService.heartbeat(authUser);         // now null-safe in service
+        return ResponseEntity.noContent().build();
+    }
+
+    @PatchMapping("/me/status")
+    public ResponseEntity<Void> setMyStatus(@AuthenticationPrincipal User authUser,
+                                            @RequestBody UpdateStatusRequest req) {
+        userService.setCurrentUserStatus(authUser, req.getStatus());
+        return ResponseEntity.noContent().build();
+    }
+
+    @Data
+    public static class UpdateStatusRequest {
+        private UserStatus status;
     }
 }

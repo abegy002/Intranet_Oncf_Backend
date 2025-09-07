@@ -18,7 +18,8 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
 import java.math.BigDecimal;
-import java.net.MalformedURLException;
+import java.net.URL;
+import java.time.Duration;          // ⬅️ ajouté
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -35,14 +36,15 @@ public class AttestationService {
     private final AttestationRequestRepository requestRepo;
     private final UserRepository userRepo;
 
-    // ⬇️ Inject your notification service
     private final NotificationService notificationService;
 
-    /* ==== Notification type keys (free-form strings, keep consistent in UI) ==== */
-    private static final String TYPE_ATTESTATION_SUBMITTED = "ATTESTATION_SUBMITTED";
+    // 🗄️ Storage générique (MinIO / filesystem selon config)
+    private final StorageService storage;
+
+    private static final String TYPE_ATTESTATION_SUBMITTED   = "ATTESTATION_SUBMITTED";
     private static final String TYPE_ATTESTATION_IN_PROGRESS = "ATTESTATION_IN_PROGRESS";
-    private static final String TYPE_ATTESTATION_SENT = "ATTESTATION_SENT";
-    private static final String TYPE_ATTESTATION_REJECTED = "ATTESTATION_REJECTED";
+    private static final String TYPE_ATTESTATION_SENT        = "ATTESTATION_SENT";
+    private static final String TYPE_ATTESTATION_REJECTED    = "ATTESTATION_REJECTED";
 
     /* =========================== Commands =========================== */
 
@@ -58,7 +60,7 @@ public class AttestationService {
 
         req = requestRepo.save(req);
 
-        // 🔔 Notify HR + ADMIN that a new request was submitted
+        // 🔔 Managers
         String hrAdminTitle = "Nouvelle demande d’attestation";
         String hrAdminMsg = String.format(
                 "%s %s a soumis une demande d’attestation (%s).",
@@ -69,10 +71,10 @@ public class AttestationService {
                 hrAdminTitle,
                 hrAdminMsg,
                 uiRequestDetailUrlForManagers(req.getId()),
-                employee.getUsername() // actor = employee
+                employee.getUsername()
         );
 
-        // (Optional) 🔔 Acknowledge to employee
+        // 🔔 Accusé réception employé
         notificationService.createForUser(
                 employee.getId(),
                 employee.getUsername(),
@@ -87,17 +89,15 @@ public class AttestationService {
 
     public AttestationRequest process(Long id, String processor) {
         AttestationRequest req = findByIdOrThrow(id);
-
         if (req.getStatus() == AttestationRequest.AttestationStatus.REJETE) {
             throw new IllegalStateException("Cette demande a été rejetée et ne peut plus être modifiée.");
         }
-
         req.setStatus(AttestationRequest.AttestationStatus.EN_COURS);
         req.setProcessedBy(processor);
         req.setProcessedAt(LocalDateTime.now());
         req = requestRepo.save(req);
 
-        // 🔔 Notify employee that HR/ADMIN started processing
+        // 🔔 Notif employé
         User employee = req.getEmployee();
         notificationService.createForUser(
                 employee.getId(),
@@ -105,13 +105,12 @@ public class AttestationService {
                 TYPE_ATTESTATION_IN_PROGRESS,
                 "Votre demande d’attestation est en cours de traitement",
                 "Un RH/Administrateur a pris en charge votre demande.",
-                processor // actor = HR/ADMIN username
+                processor
         );
-
         return req;
     }
 
-    /** HR uploads the signed PDF and the request becomes ENVOYE */
+    /** RH charge le PDF signé -> ENVOYE (stocké dans MinIO via StorageService) */
     public AttestationRequest sendWithSignedPdf(Long id, MultipartFile file) {
         AttestationRequest req = findByIdOrThrow(id);
 
@@ -126,27 +125,40 @@ public class AttestationService {
         }
 
         try {
-            Path signedDir = Paths.get("src/main/resources/static/attestations/signed").toAbsolutePath();
-            Files.createDirectories(signedDir);
+            // Nom « propre »
+            String safeName = sanitizePdfFilename(file.getOriginalFilename());
 
-            String filename = "attestation_" + id + "_signed_" + System.currentTimeMillis() + ".pdf";
-            Path target = signedDir.resolve(filename);
+            // Chemin/clé stable dans MinIO
+            User employee = req.getEmployee();
+            String who = (employee.getEmployeeCode() != null && !employee.getEmployeeCode().isBlank())
+                    ? employee.getEmployeeCode()
+                    : String.valueOf(employee.getId());
 
-            Files.copy(file.getInputStream(), target);
+            LocalDate now = LocalDate.now();
+            String objectKey = String.format(
+                    "attestations/signed/%s/%04d/%02d/attestation_%d_%d.pdf",
+                    who, now.getYear(), now.getMonthValue(), req.getId(), System.currentTimeMillis()
+            );
 
-            req.setSignedDocumentPath(target.toString());
-            req.setSignedDocumentFilename(filename);
+            // Upload dans MinIO (ou autre impl StorageService)
+            String storageKey = storage.put(
+                    file.getInputStream(),
+                    file.getSize(),
+                    "application/pdf",
+                    objectKey
+            );
+
+            // Persistance des métadonnées
+            req.setSignedDocumentPath(storageKey);   // ⬅️ clé MinIO
+            req.setSignedDocumentFilename(safeName); // ⬅️ nom d’affichage
             req.setStatus(AttestationRequest.AttestationStatus.ENVOYE);
             req.setSentAt(LocalDateTime.now());
 
             req = requestRepo.save(req);
 
-            // 🔔 Notify employee with a direct download link or UI page
-            User employee = req.getEmployee();
+            // 🔔 Notif employé
             String title = "Votre attestation est prête";
             String msg = "Votre attestation signée a été envoyée. Cliquez pour la télécharger.";
-            // If you expose a REST endpoint like /attestations/signed/{id}, use it as link:
-            String link = apiSignedDownloadUrl(req.getId()); // or uiRequestDetailUrlForEmployee(req.getId())
             notificationService.createForUser(
                     employee.getId(),
                     employee.getUsername(),
@@ -168,7 +180,7 @@ public class AttestationService {
         req.setStatus(AttestationRequest.AttestationStatus.REJETE);
         req = requestRepo.save(req);
 
-        // 🔔 Notify employee that their request was rejected
+        // 🔔 Notif employé
         User employee = req.getEmployee();
         notificationService.createForUser(
                 employee.getId(),
@@ -178,7 +190,6 @@ public class AttestationService {
                 "Veuillez contacter le service RH pour plus d’informations.",
                 req.getProcessedBy() != null ? req.getProcessedBy() : "system"
         );
-
         return req;
     }
 
@@ -200,7 +211,6 @@ public class AttestationService {
         return requestRepo.findByEmployeeId(userId);
     }
 
-    /** <-- Used by controller /attestations/signed/{id} before building Content-Disposition */
     public AttestationRequest findByIdOrThrow(Long id) {
         return requestRepo.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Demande introuvable"));
@@ -210,7 +220,6 @@ public class AttestationService {
 
     public byte[] generatePdfAndReturnBytes(Long requestId) {
         AttestationRequest request = findByIdOrThrow(requestId);
-
         if (request.getStatus() == AttestationRequest.AttestationStatus.REJETE) {
             throw new IllegalStateException("Cette demande a été rejetée et ne peut plus être modifiée.");
         }
@@ -310,22 +319,20 @@ public class AttestationService {
 
     /* =========================== File access =========================== */
 
-    /** <-- Used by controller to actually stream the signed PDF by request id */
+    /**
+     * Retourne une Resource basée sur une **URL présignée** MinIO (TTL 10 min).
+     * Idéale si votre contrôleur fait un simple `return ResponseEntity.ok(resource)` ou une redirection.
+     */
     public Resource loadSignedPdfAsResource(Long id) {
         AttestationRequest req = findByIdOrThrow(id);
-
         if (req.getSignedDocumentPath() == null) {
             throw new IllegalStateException("Aucun fichier signé n'est associé à cette demande.");
         }
         try {
-            Path path = Paths.get(req.getSignedDocumentPath()).toAbsolutePath().normalize();
-            Resource resource = new UrlResource(path.toUri());
-            if (!resource.exists() || !resource.isReadable()) {
-                throw new IllegalStateException("Fichier signé introuvable ou illisible.");
-            }
-            return resource;
-        } catch (MalformedURLException e) {
-            throw new RuntimeException("Chemin de fichier invalide : " + e.getMessage(), e);
+            URL url = storage.getSignedUrl(req.getSignedDocumentPath(), Duration.ofMinutes(10));
+            return new UrlResource(url);
+        } catch (Exception e) {
+            throw new RuntimeException("Erreur lors de la création de l'URL signée : " + e.getMessage(), e);
         }
     }
 
@@ -348,26 +355,48 @@ public class AttestationService {
         } catch (Exception ignored) { }
     }
 
-    /* =========================== URL builders (adjust to your routes) =========================== */
+    /* =========================== URL builders =========================== */
 
-    // Manager/HR view of a specific request
     private String uiRequestDetailUrlForManagers(Long reqId) {
         return "/app/attestations/requests/" + reqId;
     }
 
-    // Employee view of their request
     private String uiRequestDetailUrlForEmployee(Long reqId) {
         return "/app/attestations/mine/" + reqId;
     }
 
-    // Employee "My requests" list
     private String uiMyRequestsUrl() {
         return "/app/attestations/mine";
     }
 
-    // Direct backend download endpoint (if you expose it in a controller)
     private String apiSignedDownloadUrl(Long reqId) {
-        // e.g., GET /attestations/signed/{id}
         return "/attestations/signed/" + reqId;
+    }
+
+    /* =========================== Extras =========================== */
+
+    /** (Optionnel) URL présignée simple si vous voulez renvoyer une String depuis un endpoint. */
+    public String signedUrl(Long requestId, Duration ttl) {
+        AttestationRequest req = findByIdOrThrow(requestId);
+        if (req.getSignedDocumentPath() == null || req.getSignedDocumentPath().isBlank()) {
+            throw new IllegalStateException("Aucun PDF signé associé.");
+        }
+        try {
+            return storage.getSignedUrl(req.getSignedDocumentPath(), ttl != null ? ttl : Duration.ofMinutes(10)).toExternalForm();
+        } catch (Exception e) {
+            throw new RuntimeException("Erreur génération URL signée : " + e.getMessage(), e);
+        }
+    }
+
+    /** Nettoyage minimal pour nom PDF. */
+    private String sanitizePdfFilename(String original) {
+        String fallback = "attestation.pdf";
+        if (original == null || original.isBlank()) return fallback;
+        String name = original.replace("\\", "/");
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0) name = name.substring(slash + 1);
+        if (!name.toLowerCase().endsWith(".pdf")) name = name + ".pdf";
+        name = name.replaceAll("[^a-zA-Z0-9._-]", "_");
+        return name.isBlank() ? fallback : name;
     }
 }

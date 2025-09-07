@@ -39,6 +39,9 @@ public class NotificationService {
 
     /* ======================= Create (single) ======================= */
 
+    /**
+     * Core method. If {@code recipientId} is null, it resolves it from {@code recipientUsername}.
+     */
     @Transactional
     public NotificationDto createForUser(Long recipientId,
                                          String recipientUsername,
@@ -46,6 +49,15 @@ public class NotificationService {
                                          String title,
                                          String message,
                                          String actorUsername) {
+
+        if (recipientId == null) {
+            String finalRecipientUsername = recipientUsername;
+            var user = userRepo.findByUsername(recipientUsername)
+                    .orElseThrow(() -> new IllegalArgumentException("Unknown user username=" + finalRecipientUsername));
+            recipientId = user.getId();
+            recipientUsername = user.getUsername(); // normalize
+        }
+
         Notification n = Notification.builder()
                 .recipientId(recipientId)
                 .recipientUsername(recipientUsername)
@@ -58,16 +70,29 @@ public class NotificationService {
 
         n = notifRepo.save(n);
 
-        // Real-time push if we know the username
+        // Real-time push
         if (recipientUsername != null && !recipientUsername.isBlank()) {
             gateway.sendToUser(recipientUsername, toDto(n));
         }
+
         return toDto(n);
+    }
+
+    /**
+     * Convenience overload: create by username only (id will be resolved).
+     */
+    @Transactional
+    public NotificationDto createForUser(String recipientUsername,
+                                         String type,
+                                         String title,
+                                         String message,
+                                         String actorUsername) {
+        return createForUser(null, recipientUsername, type, title, message, actorUsername);
     }
 
     /* ======================= Create (fan-out) ======================= */
 
-    /** Fan-out to explicit user IDs (dedup handled by DB or caller). */
+    /** Fan-out to explicit user IDs. */
     @Transactional
     public void createForUsers(Collection<Long> userIds,
                                String type,
@@ -101,7 +126,7 @@ public class NotificationService {
         }
     }
 
-    /** Fan-out to everyone with ANY of the given roles (HR + ADMIN, etc.). Deduplicates by user ID. */
+    /** Fan-out to everyone with ANY of the given roles (dedup by user ID). */
     @Transactional
     public void createForRoles(Collection<String> roleNames,
                                String type,
@@ -113,7 +138,6 @@ public class NotificationService {
 
         List<Object[]> rows = userRepo.findIdAndUsernameByRoles(roleNames);
 
-        // Deduplicate (safety; your model is ManyToOne so usually not needed)
         Map<Long, String> idToUsername = new LinkedHashMap<>();
         for (Object[] row : rows) {
             Long uid = (Long) row[0];
@@ -137,10 +161,7 @@ public class NotificationService {
 
     /* ======================= Query & update ======================= */
 
-    public Page<NotificationDto> listForUser(Long recipientId,
-                                             boolean unreadOnly,
-                                             int page,
-                                             int size) {
+    public Page<NotificationDto> listForUser(Long recipientId, boolean unreadOnly, int page, int size) {
         Pageable p = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         Page<Notification> res = unreadOnly
                 ? notifRepo.findByRecipientIdAndReadAtIsNullOrderByCreatedAtDesc(recipientId, p)

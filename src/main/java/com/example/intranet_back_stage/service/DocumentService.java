@@ -2,7 +2,10 @@ package com.example.intranet_back_stage.service;
 
 import com.example.intranet_back_stage.dto.DocumentCreateDto;
 import com.example.intranet_back_stage.dto.DocumentDto;
+import com.example.intranet_back_stage.dto.DocumentRejectDto;
 import com.example.intranet_back_stage.dto.VersionDto;
+import com.example.intranet_back_stage.enums.DocumentStatus;
+import com.example.intranet_back_stage.enums.Sensitivity;
 import com.example.intranet_back_stage.model.Document;
 import com.example.intranet_back_stage.model.DocumentAudit;
 import com.example.intranet_back_stage.model.DocumentVersion;
@@ -13,9 +16,9 @@ import com.example.intranet_back_stage.repository.DocumentVersionRepository;
 import com.example.intranet_back_stage.repository.FolderRepository;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.*;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -36,107 +39,219 @@ public class DocumentService {
     private final FolderRepository folderRepo;
     private final StorageService storage;
 
-    // icons
     private final FileIconService fileIconService;
-
-    // notifications
     private final NotificationService notificationService;
 
-    // Notification type keys
-    private static final String TYPE_DOC_CREATED    = "DOC_CREATED";
-    private static final String TYPE_DOC_NEWVER     = "DOC_NEW_VERSION";
+    private static final String TYPE_DOC_CREATED        = "DOC_SUBMITTED";
+    private static final String TYPE_DOC_APPROVED       = "DOC_APPROVED";
+    private static final String TYPE_DOC_REJECTED       = "DOC_REJECTED";
+    private static final String TYPE_DOC_ABROGATED      = "DOC_ABROGATED";
+    private static final String TYPE_DOC_NEWVER_REVIEW  = "DOC_NEWVER_REVIEW";
 
-    // Role names that should receive doc updates (adjust if yours differ)
-    private static final String ROLE_EMPLOYEE       = "USER";
-    private static final String ROLE_DOCS_VIEWER    = "DOCS_VIEWER";
+    private static final String ROLE_EMPLOYEE    = "USER";
+    private static final String ROLE_DOCS_VIEWER = "DOCS_VIEWER";
+    private static final String ROLE_HR          = "HR";
+    private static final String ROLE_ADMIN       = "ADMIN";
 
+    /* ===================== CREATE (always IN_REVIEW) ===================== */
     @Transactional
     public DocumentDto create(DocumentCreateDto meta, MultipartFile file, String username) throws Exception {
-        Folder folder = (meta.folderId()!=null)
+        Folder folder = (meta.folderId() != null)
                 ? folderRepo.findById(meta.folderId()).orElseThrow(() -> new IllegalArgumentException("Folder not found"))
                 : null;
 
         Document d = new Document();
         d.setFolder(folder);
-        d.setTitle(meta.title());                 // keep extension if you send it from FE
-        d.setDocType(meta.docType());
-        d.setStatus(Optional.ofNullable(meta.status()).orElse("BROUILLON"));
-        d.setSensitivity(Optional.ofNullable(meta.sensitivity()).orElse("INTERNE"));
+        d.setTitle(meta.title());
+        d.setDocType(meta.docType());                       // enum in the entity
+        d.setStatus(DocumentStatus.IN_REVIEW);              // submitted for review
+        d.setSensitivity(Optional.ofNullable(meta.sensitivity()).orElse(Sensitivity.INTERNAL));
         d.setOwner(username);
         d.setCreatedAt(LocalDateTime.now());
         d = docRepo.save(d);
 
         addVersionInternal(d, file, "1.0", username, "Initial upload");
-        audit("CREATE", d.getId(), username, "Created with 1.0");
+        audit("CREATE", d.getId(), username, "Submitted for review");
 
-        // 🔔 notify employees that a new document is available
-        String title = "Nouveau document: " + d.getTitle();
-        String message = "Ajouté" + (folder != null ? " dans " + folder.getPath() : " à la racine") + ".";
-        String link = uiDocListLink(d.getId(), folder);
-        // fan-out to typical employee roles
-        safeNotifyRole(ROLE_EMPLOYEE, TYPE_DOC_CREATED, title, message, link, username);
-        safeNotifyRole(ROLE_DOCS_VIEWER, TYPE_DOC_CREATED, title, message, link, username);
+        // 🔔 notify HR/Admin review queue
+        safeNotifyRole(ROLE_HR, TYPE_DOC_CREATED, "Nouveau document à valider",
+                d.getTitle(), uiDocListLink(d.getId(), folder), username);
+        safeNotifyRole(ROLE_ADMIN, TYPE_DOC_CREATED, "Nouveau document à valider",
+                d.getTitle(), uiDocListLink(d.getId(), folder), username);
 
         return toDto(d);
     }
 
-    public Page<DocumentDto> getAll(Pageable p) {
-        return docRepo.findAll(p).map(this::toDto);
+    /* ===================== REVIEW ACTIONS ===================== */
+
+    @Transactional
+    public DocumentDto approve(Long docId, String reviewer) {
+        Document d = docRepo.findById(docId).orElseThrow();
+        if (d.getStatus() != DocumentStatus.IN_REVIEW) {
+            throw new IllegalStateException("Seuls les documents en revue peuvent être approuvés.");
+        }
+        d.setStatus(DocumentStatus.PUBLISHED);
+        d.setReviewedBy(reviewer);
+        d.setReviewedAt(LocalDateTime.now());
+        d.setRejectionReason(null);
+        d.setPublishedAt(LocalDateTime.now());
+        d.setUpdatedAt(LocalDateTime.now());
+        d = docRepo.save(d);
+
+        audit("APPROVE", d.getId(), reviewer, "Publication");
+        safeNotifyRole(ROLE_EMPLOYEE, TYPE_DOC_APPROVED, "Document publié", d.getTitle(),
+                uiDocListLink(d.getId(), d.getFolder()), reviewer);
+
+        return toDto(d);
     }
 
-    public Page<DocumentDto> getByFolder(Long folderId, Pageable p, String q) {
+    @Transactional
+    public DocumentDto reject(Long docId, DocumentRejectDto dto, String reviewer) {
+        Document d = docRepo.findById(docId).orElseThrow();
+        if (d.getStatus() != DocumentStatus.IN_REVIEW) {
+            throw new IllegalStateException("Seuls les documents en revue peuvent être rejetés.");
+        }
+        d.setStatus(DocumentStatus.REJECTED);
+        d.setReviewedBy(reviewer);
+        d.setReviewedAt(LocalDateTime.now());
+        d.setRejectionReason(dto != null ? dto.reason() : null);
+        d.setUpdatedAt(LocalDateTime.now());
+        d = docRepo.save(d);
+
+        audit("REJECT", d.getId(), reviewer, d.getRejectionReason());
+
+        // 🔔 notify owner using username-only overload (ID resolved internally)
+        notificationService.createForUser(
+                d.getOwner(),
+                TYPE_DOC_REJECTED,
+                "Votre document a été rejeté",
+                Optional.ofNullable(d.getRejectionReason()).orElse("Consultez les commentaires du relecteur."),
+                reviewer
+        );
+
+        return toDto(d);
+    }
+
+    @Transactional
+    public DocumentDto abrogate(Long docId, String actor) {
+        Document d = docRepo.findById(docId).orElseThrow();
+        if (d.getStatus() != DocumentStatus.PUBLISHED) {
+            throw new IllegalStateException("Seuls les documents publiés peuvent être abrogés.");
+        }
+        d.setStatus(DocumentStatus.WITHDRAWN);
+        d.setAbrogatedAt(LocalDateTime.now());
+        d.setUpdatedAt(LocalDateTime.now());
+        d = docRepo.save(d);
+
+        audit("ABROGATE", d.getId(), actor, "Retiré de la circulation");
+        safeNotifyRole(ROLE_EMPLOYEE, TYPE_DOC_ABROGATED, "Document retiré", d.getTitle(),
+                uiDocListLink(d.getId(), d.getFolder()), actor);
+        return toDto(d);
+    }
+
+    /* ===================== VERSIONING RULE ===================== */
+    @Transactional
+    public VersionDto addVersion(Long docId, MultipartFile file, String versionNo, String username, String comment) throws Exception {
+        Document d = docRepo.findById(docId).orElseThrow();
+        VersionDto v = addVersionInternal(d, file, versionNo, username, comment);
+
+        // if the doc was published, new version returns to IN_REVIEW
+        if (d.getStatus() == DocumentStatus.PUBLISHED) {
+            d.setStatus(DocumentStatus.IN_REVIEW);
+            d.setUpdatedAt(LocalDateTime.now());
+            d.setReviewedBy(null);
+            d.setReviewedAt(null);
+            d.setRejectionReason(null);
+            docRepo.save(d);
+
+            audit("UPDATE", d.getId(), username, "New version; back to IN_REVIEW");
+            safeNotifyRole(ROLE_HR, TYPE_DOC_NEWVER_REVIEW, "Nouvelle version à valider",
+                    d.getTitle() + " v" + versionNo, uiDocListLink(d.getId(), d.getFolder()), username);
+            safeNotifyRole(ROLE_ADMIN, TYPE_DOC_NEWVER_REVIEW, "Nouvelle version à valider",
+                    d.getTitle() + " v" + versionNo, uiDocListLink(d.getId(), d.getFolder()), username);
+        } else {
+            audit("UPDATE", d.getId(), username, "New version " + versionNo);
+        }
+        return v;
+    }
+
+    /* ===================== Visibility / Sensitivity filtering ===================== */
+
+    /** Returns a page filtered by user’s rights against sensitivity. */
+    public Page<DocumentDto> getAllVisible(Pageable p, Authentication auth) {
+        Page<Document> page = docRepo.findAll(p);
+        List<DocumentDto> visible = page.getContent().stream()
+                .filter(d -> canSee(d, auth))
+                .map(this::toDto)
+                .toList();
+        return new PageImpl<>(visible, p, page.getTotalElements());
+    }
+
+    public Page<DocumentDto> getByFolderVisible(Long folderId, Pageable p, String q, Authentication auth) {
+        Page<Document> page = getByFolderRaw(folderId, p, q);
+        List<DocumentDto> visible = page.getContent().stream()
+                .filter(d -> canSee(d, auth))
+                .map(this::toDto)
+                .toList();
+        return new PageImpl<>(visible, p, page.getTotalElements());
+    }
+
+    private Page<Document> getByFolderRaw(Long folderId, Pageable p, String q) {
         String query = (q == null) ? "" : q.trim();
         Specification<Document> spec = (root, cq, cb) -> {
             var folderExpr = root.get("folder");
             var inFolder = (folderId == null) ? cb.isNull(folderExpr) : cb.equal(folderExpr.get("id"), folderId);
             if (query.isEmpty()) return inFolder;
             var titleLike = cb.like(cb.lower(root.get("title")), "%" + query.toLowerCase() + "%");
-            var typeLike  = cb.like(cb.lower(root.get("docType")), "%" + query.toLowerCase() + "%");
+            var typeLike  = cb.like(cb.lower(root.get("docType").as(String.class)), "%" + query.toLowerCase() + "%");
             return cb.and(inFolder, cb.or(titleLike, typeLike));
         };
-        return docRepo.findAll(spec, p).map(this::toDto);
+        return docRepo.findAll(spec, p);
     }
 
-    public DocumentDto getById(Long id) {
-        Document d = docRepo.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Document not found: " + id));
-        return toDto(d);
+    public Page<DocumentDto> search(String q, Pageable p, Authentication auth) {
+        String query = (q == null) ? "" : q.trim();
+        Specification<Document> spec = (root, cq, cb) -> {
+            if (query.isEmpty()) return cb.conjunction();
+            var titleLike = cb.like(cb.lower(root.get("title")), "%" + query.toLowerCase() + "%");
+            var typeLike  = cb.like(cb.lower(root.get("docType").as(String.class)), "%" + query.toLowerCase() + "%");
+            return cb.or(titleLike, typeLike);
+        };
+
+        Page<Document> page = docRepo.findAll(spec, p);
+        List<DocumentDto> visible = page.getContent().stream()
+                .filter(d -> canSee(d, auth))
+                .map(this::toDto)
+                .toList();
+
+        return new PageImpl<>(visible, p, page.getTotalElements());
     }
 
-    @Transactional
-    public VersionDto addVersion(Long docId, MultipartFile file, String versionNo, String username, String comment) throws Exception {
-        Document d = docRepo.findById(docId).orElseThrow();
-        VersionDto v = addVersionInternal(d, file, versionNo, username, comment);
-        audit("UPDATE", d.getId(), username, "New version " + versionNo);
-
-        // 🔔 notify employees about the new version
-        String nTitle = "Nouvelle version: " + d.getTitle() + " (v" + versionNo + ")";
-        String nMsg   = "Ajoutée par " + username + ".";
-        String link   = uiDocListLink(d.getId(), d.getFolder());
-        safeNotifyRole(ROLE_EMPLOYEE, TYPE_DOC_NEWVER, nTitle, nMsg, link, username);
-        safeNotifyRole(ROLE_DOCS_VIEWER, TYPE_DOC_NEWVER, nTitle, nMsg, link, username);
-
-        return v;
+    private boolean canSee(Document d, Authentication auth) {
+        if (d.getSensitivity() == Sensitivity.INTERNAL) return true;
+        if (auth == null) return false;
+        boolean isOwner = d.getOwner() != null && d.getOwner().equalsIgnoreCase(auth.getName());
+        boolean isAdmin = hasAnyRole(auth, "ADMIN");
+        boolean isHr    = hasAnyRole(auth, "HR");
+        return isOwner || isAdmin || (d.getSensitivity() == Sensitivity.SENSITIVE && isHr);
     }
+
+    private boolean hasAnyRole(Authentication auth, String role) {
+        return auth.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_" + role));
+    }
+
+    /* ===================== Storage & versioning internals ===================== */
 
     private VersionDto addVersionInternal(Document d, MultipartFile file, String versionNo, String username, String comment) throws Exception {
         if (file == null || file.isEmpty()) throw new IllegalArgumentException("File required");
 
-        String folderPath = (d.getFolder() == null)
-                ? "root"
-                : sanitizeFolderPath(d.getFolder().getPath());
-        String titleSlug = slug(d.getTitle());
+        String folderPath   = (d.getFolder() == null) ? "root" : sanitizeFolderPath(d.getFolder().getPath());
+        String titleSlug    = slug(d.getTitle());
         String safeOriginal = sanitizeFilename(file.getOriginalFilename());
 
-        String objectKey = String.format("docs/%s/%s/v%s/%s",
-                folderPath, titleSlug, versionNo, safeOriginal);
+        String objectKey = String.format("docs/%s/%s/v%s/%s", folderPath, titleSlug, versionNo, safeOriginal);
 
-        String key = storage.put(
-                file.getInputStream(),
-                file.getSize(),
-                file.getContentType(),
-                objectKey
-        );
+        String key = storage.put(file.getInputStream(), file.getSize(), file.getContentType(), objectKey);
 
         DocumentVersion v = new DocumentVersion();
         v.setDocument(d);
@@ -161,29 +276,6 @@ public class DocumentService {
         return storage.getSignedUrl(v.getStorageKey(), ttl);
     }
 
-    public Page<DocumentDto> search(String q, Pageable p) {
-        return docRepo.findByTitleContainingIgnoreCaseOrDocTypeContainingIgnoreCase(q, q, p)
-                .map(this::toDto);
-    }
-
-    private DocumentDto toDto(Document d) {
-        List<VersionDto> versions = verRepo.findByDocumentIdOrderByCreatedAtDesc(d.getId()).stream()
-                .map(v -> new VersionDto(v.getId(), v.getVersionNo(), v.getFilename(), v.getSize(), v.getCreatedBy(), v.getCreatedAt()))
-                .toList();
-
-        String latestFilename = versions.isEmpty() ? null : versions.get(0).filename();
-        String iconUrl = fileIconService.iconFor(d.getDocType(), latestFilename);
-
-        return new DocumentDto(
-                d.getId(), d.getTitle(), d.getDocType(), d.getStatus(), d.getSensitivity(),
-                d.getOwner(), d.getCreatedAt(), d.getUpdatedAt(), versions, iconUrl
-        );
-    }
-
-    private void audit(String action, Long docId, String actor, String details) {
-        auditRepo.save(new DocumentAudit(null, docId, action, actor, LocalDateTime.now(), details));
-    }
-
     @Transactional
     public void delete(Long docId, String username) {
         Document d = docRepo.findById(docId)
@@ -193,7 +285,9 @@ public class DocumentService {
 
         for (DocumentVersion v : versions) {
             try {
-                if (v.getStorageKey() != null) storage.delete(v.getStorageKey());
+                if (v.getStorageKey() != null && !v.getStorageKey().isBlank()) {
+                    storage.delete(v.getStorageKey());
+                }
             } catch (Exception ex) {
                 System.err.println("Failed to delete blob: " + v.getStorageKey() + " -> " + ex.getMessage());
             }
@@ -202,9 +296,59 @@ public class DocumentService {
         verRepo.deleteAll(versions);
         docRepo.delete(d);
         audit("DELETE", docId, username, "Document and " + versions.size() + " version(s) removed");
+    }
 
-        // (Optional) you can notify HR/Admin about deletions if needed.
-        // notificationService.createForHrAndAdmin(...);
+    @Transactional
+    public void deleteVersion(Long versionId, String username) {
+        DocumentVersion v = verRepo.findById(versionId).orElseThrow();
+        Document d = v.getDocument();
+
+        try {
+            if (v.getStorageKey() != null && !v.getStorageKey().isBlank()) {
+                storage.delete(v.getStorageKey());
+            }
+        } catch (Exception ex) {
+            System.err.println("Failed to delete blob: " + v.getStorageKey() + " -> " + ex.getMessage());
+        }
+
+        verRepo.delete(v);
+
+        d.setUpdatedAt(LocalDateTime.now());
+        docRepo.save(d);
+
+        audit("DELETE_VERSION", d.getId(), username, "versionId=" + versionId + ", v=" + v.getVersionNo());
+    }
+
+    private DocumentDto toDto(Document d) {
+        var versions = verRepo.findByDocumentIdOrderByCreatedAtDesc(d.getId()).stream()
+                .map(v -> new VersionDto(v.getId(), v.getVersionNo(), v.getFilename(), v.getSize(), v.getCreatedBy(), v.getCreatedAt()))
+                .toList();
+
+        String latestFilename = versions.isEmpty() ? null : versions.get(0).filename();
+        String docTypeKey = (d.getDocType() != null) ? d.getDocType().name() : null;
+        String iconUrl = fileIconService.iconFor(docTypeKey, latestFilename);
+
+        return new DocumentDto(
+                d.getId(),
+                d.getTitle(),
+                d.getDocType(),
+                d.getStatus(),
+                d.getSensitivity(),
+                d.getOwner(),
+                d.getCreatedAt(),
+                d.getUpdatedAt(),
+                versions,
+                iconUrl,
+                d.getReviewedBy(),
+                d.getReviewedAt(),
+                d.getRejectionReason(),
+                d.getPublishedAt(),
+                d.getAbrogatedAt()
+        );
+    }
+
+    private void audit(String action, Long docId, String actor, String details) {
+        auditRepo.save(new DocumentAudit(null, docId, action, actor, LocalDateTime.now(), details));
     }
 
     /* ------------ helpers ------------ */
@@ -218,40 +362,29 @@ public class DocumentService {
     private String slug(String s) {
         if (s == null) return "untitled";
         String n = Normalizer.normalize(s.trim(), Normalizer.Form.NFD).replaceAll("\\p{M}+","");
-        n = n.replaceAll("[^a-zA-Z0-9-_ ]","").replace(' ','-'); // ✅ fix here
+        n = n.replaceAll("[^a-zA-Z0-9-_ ]","").replace(' ','-');
         n = n.replaceAll("-{2,}", "-");
         return n.isBlank() ? "untitled" : n.toLowerCase();
     }
 
     private String sanitizeFilename(String original) {
         if (original == null || original.isBlank()) return "file";
-        String ext = getExtension(original);
-        String base = original.substring(0, original.length() - ext.length());
+        int dot = original.lastIndexOf('.');
+        String ext  = (dot < 0) ? "" : original.substring(dot).replaceAll("[^a-zA-Z0-9.]", "").toLowerCase();
+        String base = (dot < 0) ? original : original.substring(0, dot);
         String safeBase = slug(base);
-        return ext.isEmpty() ? safeBase : safeBase + ext.toLowerCase();
-    }
-
-    private String getExtension(String filename) {
-        int dot = filename.lastIndexOf('.');
-        if (dot < 0 || dot == filename.length() - 1) return "";
-        return filename.substring(dot).replaceAll("[^a-zA-Z0-9.]", "").toLowerCase();
+        return ext.isEmpty() ? safeBase : safeBase + ext;
     }
 
     private String uiDocListLink(Long docId, Folder folder) {
-        // Adjust to your Angular routes.
-        // Example: a list page that can highlight a doc by query param:
-        //   /app/docs?docId=123 or /app/docs?folderId=456&docId=123
-        if (folder != null) {
-            return "/app/docs?folderId=" + folder.getId() + "&docId=" + docId;
-        }
-        return "/app/docs?root=true&docId=" + docId;
+        return (folder != null)
+                ? "/app/docs?folderId=" + folder.getId() + "&docId=" + docId
+                : "/app/docs?root=true&docId=" + docId;
     }
 
     private void safeNotifyRole(String role, String type, String title, String message, String link, String actor) {
         try {
             notificationService.createForRole(role, type, title, message, link, actor);
-        } catch (Exception ignored) {
-            // swallow to avoid breaking document flows if role doesn't exist in some envs
-        }
+        } catch (Exception ignored) { }
     }
 }

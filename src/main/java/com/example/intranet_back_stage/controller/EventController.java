@@ -24,13 +24,6 @@ public class EventController {
 
     private final EventService service;
 
-    @GetMapping
-    public org.springframework.data.domain.Page<EventDto> listAll(
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "12") int size) {
-        return service.listAll(page, size);
-    }
-
     // Create WITH image (multipart) — matches your Angular FormData(data + file)
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasAnyRole('ADMIN','HR')")

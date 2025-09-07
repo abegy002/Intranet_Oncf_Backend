@@ -1,13 +1,18 @@
+// src/main/java/com/example/intranet_back_stage/model/User.java
 package com.example.intranet_back_stage.model;
 
+import com.example.intranet_back_stage.enums.UserStatus;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
+import jakarta.validation.constraints.Size;
 import lombok.*;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -19,8 +24,7 @@ import java.util.stream.Collectors;
 @Table(name = "users")
 public class User implements UserDetails {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
     @Column(unique = true, nullable = false, updatable = false)
@@ -32,8 +36,32 @@ public class User implements UserDetails {
     private String lastname;
     private String email;
 
-    @Column(precision = 10, scale = 2) // Exemple : 99999999.99
+    @Column(precision = 10, scale = 2)
     private BigDecimal salaire;
+
+    /* NEW FIELDS */
+    @Column(name = "hire_date")
+    private LocalDate hireDate;        // date d’embauche
+
+    @Column(name = "cin", length = 20, unique = true)
+    @Size(max = 20)
+    private String cin;                // CIN (often 1–2 letters + digits)
+
+    @Column(name = "phone_number", length = 20)
+    @Size(max = 20)
+    private String phoneNumber;        // e.g. +212 6xx xx xx xx
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private UserStatus status = UserStatus.OFFLINE;
+
+    @Column
+    private LocalDateTime lastSeen;
+
+    @PrePersist
+    public void onCreate() {
+        if (status == null) status = UserStatus.OFFLINE;
+    }
 
     @ManyToOne(fetch = FetchType.EAGER)
     @JoinColumn(name = "job_id")
@@ -43,7 +71,6 @@ public class User implements UserDetails {
     @JoinColumn(name = "role_id")
     private Role role;
 
-    // User permissions directly managed here
     @ManyToMany(fetch = FetchType.EAGER)
     @JoinTable(
             name = "user_permissions",
@@ -52,8 +79,7 @@ public class User implements UserDetails {
     )
     private Set<Permission> permissions = new HashSet<>();
 
-    // Constructors for convenience
-    public User(Long id, String username, String password, Role role, Set<Permission> permissions ) {
+    public User(Long id, String username, String password, Role role, Set<Permission> permissions) {
         this.id = id;
         this.username = username;
         this.password = password;
@@ -63,21 +89,17 @@ public class User implements UserDetails {
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
         Set<GrantedAuthority> authorities = new HashSet<>();
-
-        // Optionally add the role as authority
         if (role != null) {
             authorities.add(new SimpleGrantedAuthority("ROLE_" + role.getName()));
         }
-
-        // Add all user permissions as authorities
-        authorities.addAll(permissions.stream()
-                .map(p -> new SimpleGrantedAuthority(p.getName()))
-                .collect(Collectors.toSet()));
-
+        authorities.addAll(
+                permissions.stream()
+                        .map(p -> new SimpleGrantedAuthority(p.getName()))
+                        .collect(Collectors.toSet())
+        );
         return authorities;
     }
 
-    // UserDetails interface methods
     @Override public boolean isAccountNonExpired() { return true; }
     @Override public boolean isAccountNonLocked() { return true; }
     @Override public boolean isCredentialsNonExpired() { return true; }

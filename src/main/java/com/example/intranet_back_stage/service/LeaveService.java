@@ -15,9 +15,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -31,8 +29,11 @@ public class LeaveService {
     private final LeaveBalanceRepository balanceRepo;
     private final UserRepository userRepo;
 
-    // ⬇️ Notifications
+    // 🔔 Notifications
     private final NotificationService notificationService;
+
+    // 🗄️ Storage (MinIO or filesystem depending on config)
+    private final StorageService storage;
 
     private static final BigDecimal DEFAULT_ANNUAL_ENTITLEMENT = new BigDecimal("22.00");
     private static final int MIN_ADVANCE_DAYS_EMPLOYEE = 7; // 1 semaine
@@ -178,6 +179,7 @@ public class LeaveService {
     /**
      * Les types MALADIE, MATERNITE, PATERNITE, ACCIDENT, HOSPITALISATION
      * sont automatiquement APPROUVÉS s’il y a un justificatif PDF fourni; sinon EN_ATTENTE.
+     * => Le justificatif est stocké via StorageService (MinIO si configuré).
      */
     public LeaveRequest createByRh(LeaveRequestRHCreateDTO dto, MultipartFile justificatif) {
         User employee = userRepo.findByEmployeeCode(dto.getEmployeeCode())
@@ -196,23 +198,40 @@ public class LeaveService {
         lr.setCreatedAt(LocalDateTime.now());
         lr.setStatus(LeaveRequest.LeaveStatus.EN_ATTENTE); // défaut
 
-        // Sauvegarde justificatif si fourni
+        // Sauvegarde justificatif si fourni (via StorageService)
         boolean hasValidJustif = false;
         if (justificatif != null && !justificatif.isEmpty()) {
-            if (!"application/pdf".equalsIgnoreCase(justificatif.getContentType())) {
+            String ct = justificatif.getContentType();
+            if (ct == null || !ct.equalsIgnoreCase("application/pdf")) {
                 throw new IllegalArgumentException("Le justificatif doit être un PDF.");
             }
+
             try {
-                Path dir = Paths.get("src/main/resources/static/leaves/justifs").toAbsolutePath();
-                Files.createDirectories(dir);
-                String filename = "justif_" + employee.getId() + "_" + System.currentTimeMillis() + ".pdf";
-                Path target = dir.resolve(filename);
-                Files.copy(justificatif.getInputStream(), target);
-                lr.setJustificatifPath(target.toString());
-                lr.setJustificatifFilename(filename);
+                String safeName = sanitizePdfFilename(justificatif.getOriginalFilename());
+                // Exemple de clé: leaves/justifs/<employeeCode_or_id>/<yyyy>/<MM>/<filename>
+                String who = (employee.getEmployeeCode() != null && !employee.getEmployeeCode().isBlank())
+                        ? employee.getEmployeeCode()
+                        : String.valueOf(employee.getId());
+                LocalDate now = LocalDate.now();
+                String objectKey = String.format(
+                        "leaves/justifs/%s/%04d/%02d/%s",
+                        who, now.getYear(), now.getMonthValue(), safeName
+                );
+
+                String storageKey = storage.put(
+                        justificatif.getInputStream(),
+                        justificatif.getSize(),
+                        "application/pdf",
+                        objectKey
+                );
+
+                // Sans changer le schéma: on met la "clé MinIO" dans justificatifPath
+                lr.setJustificatifPath(storageKey);
+                lr.setJustificatifFilename(safeName);
                 hasValidJustif = true;
+
             } catch (Exception e) {
-                throw new RuntimeException("Erreur lors de l'enregistrement du justificatif: " + e.getMessage(), e);
+                throw new RuntimeException("Erreur stockage justificatif: " + e.getMessage(), e);
             }
         }
 
@@ -384,5 +403,38 @@ public class LeaveService {
     // Employee view of their request
     private String uiLeaveDetailUrlForEmployee(Long id) {
         return "/app/leaves/mine/" + id;
+    }
+
+    /* ================= Storage helpers ================= */
+
+    /**
+     * Retourne une URL signée (MinIO) pour télécharger le justificatif.
+     * Utilisez-la dans un contrôleur GET si besoin (redirection 302 ou lien direct).
+     */
+    public String justificatifSignedUrl(Long leaveRequestId, Duration ttl) {
+        LeaveRequest r = leaveRepo.findById(leaveRequestId)
+                .orElseThrow(() -> new IllegalArgumentException("Demande introuvable"));
+        if (r.getJustificatifPath() == null || r.getJustificatifPath().isBlank()) {
+            throw new IllegalStateException("Aucun justificatif associé.");
+        }
+        try {
+            return storage.getSignedUrl(r.getJustificatifPath(), ttl != null ? ttl : Duration.ofMinutes(5)).toExternalForm();
+        } catch (Exception e) {
+            throw new RuntimeException("Erreur génération URL signée: " + e.getMessage(), e);
+        }
+    }
+
+    /** Très simple sanitisation : conserve l’extension .pdf et nettoie le nom. */
+    private String sanitizePdfFilename(String original) {
+        String fallback = "justificatif.pdf";
+        if (original == null || original.isBlank()) return fallback;
+        String name = original.replace("\\", "/");
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0) name = name.substring(slash + 1);
+        // force .pdf
+        if (!name.toLowerCase().endsWith(".pdf")) name = name + ".pdf";
+        // retire caractères suspects
+        name = name.replaceAll("[^a-zA-Z0-9._-]", "_");
+        return name.isBlank() ? fallback : name;
     }
 }
